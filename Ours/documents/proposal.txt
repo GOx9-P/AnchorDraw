@@ -1,0 +1,244 @@
+\section{Mục tiêu}
+
+\noindent Mục tiêu của đề tài là xây dựng một phương pháp \textbf{training-free} để nâng cấp toàn diện chất lượng sinh ảnh đa vùng (\textbf{region-based}) bằng cách áp dụng thuật toán \textbf{Distillation++} làm lõi sinh ảnh chính và sử dụng \textbf{weighted masking} để xử lý triệt để các vùng chồng lấn.
+
+Cụ thể, đề tài hướng đến ba mục tiêu chính:
+\begin{enumerate}
+    \item Thiết kế và tích hợp cơ chế \textbf{weighted mask} ở cấp độ \textbf{pixel-wise} tại mỗi bước thời gian. Cơ chế này đảm nhiệm vai trò xử lý chuyên biệt các vùng chồng lấn bằng cách tính toán mức độ phân rã và hòa trộn dựa trên khoảng cách không gian và độ tương đồng ngữ nghĩa, thay thế hoàn toàn phương pháp \textbf{Quantized Masks} mang tính cơ học.
+    
+    \item Xây dựng và triển khai \textbf{Distillation++} làm lõi sinh ảnh toàn cục, thay thế cho các bộ tăng tốc dễ làm vỡ cấu trúc như \textbf{LCM}. Lõi \textbf{Distillation++} sẽ trực tiếp dẫn dắt toàn bộ quỹ đạo lấy mẫu của bức ảnh, đảm bảo chất lượng hình khối và chi tiết ở mọi tọa độ luôn bám sát tiêu chuẩn của mô hình \textbf{Teacher}.
+    
+    \item Tích hợp trọng số vùng từ \textbf{weighted mask} vào lõi \textbf{Distillation++} để thực nghiệm và chứng minh hiệu quả của kiến trúc mới. Đánh giá sự cải thiện về chất lượng ảnh tổng thể, tính liền mạch tại các ranh giới chồng lấn, độ trung thực với điều kiện vùng, và sự đánh đổi giữa hiệu suất với chi phí tính toán.
+\end{enumerate}
+
+\section{Vấn đề}
+
+\noindent Các mô hình sinh ảnh đa vùng (\textbf{region-based}) hiện nay đang phải đối mặt với một thách thức lớn: làm sao để dung hòa sự xung đột đặc trưng giữa các khu vực chồng lấn mà không làm suy giảm chất lượng tạo ảnh. Trong đó, kiến trúc \textbf{SemanticDraw} đã đề xuất giải quyết bài toán này bằng kỹ thuật chia trung bình tiềm ẩn thụ động (\textbf{Latent Pre-Averaging}), được mô hình hóa qua phương trình:
+\[
+x_{t_{i-1}} = \left( \sum_{k=1}^p \bar{w}_k \odot \bar{x}_k \right) \odot \tilde{w}^{-1} + \eta_{t_{i-1}}\epsilon
+\]
+trong đó $\bar{x}_k$ là đặc trưng hình khối thuần túy do mạng U-Net dự đoán tại bước $t_i$, $\bar{w}_k$ là cơ chế \textbf{Quantized Masks} được điều tiết cơ học qua hiệu ứng làm mờ không gian, $\tilde{w}$ là ma trận tổng trọng số để chuẩn hóa, và $\eta_{t_{i-1}}\epsilon$ là lượng nhiễu được bơm bù vào sau cùng nhằm bảo toàn phương sai.
+
+Mặc dù công thức trên cung cấp một giải pháp ráp nối trực quan, nó lại bộc lộ những lỗ hổng nghiêm trọng về mặt toán học và ngữ nghĩa khi triển khai trên thực tế, đặc biệt là khi kết hợp cùng các bộ tăng tốc lấy mẫu thời gian thực như \textbf{LCM}. Nguồn gốc của sự thất bại này đến từ hai giới hạn cốt lõi:
+
+\begin{itemize}
+    \item \textbf{Sự "mù quáng" của Quantized Masks:} Cơ chế $\bar{w}_k$ hiện tại bản chất chỉ là các bộ lọc làm mờ đẳng hướng (isotropic Gaussian blur) được lượng tử hóa theo mức độ nhiễu của \textbf{scheduler}. Sự lan tỏa trọng số này diễn ra một cách cơ học và hoàn toàn không có nhận thức về ranh giới vật lý hay bản chất vật thể. Khi hai vùng có sự dị biệt lớn về ngữ nghĩa giao nhau, phép nội suy không gian tuyến tính này sẽ gây ra hiện tượng \textbf{feature leakage}, buộc mô hình phải trộn lẫn các \textbf{latent token} hoàn toàn không liên quan với nhau.
+    
+    \item \textbf{Sự sụp đổ quỹ đạo của lõi LCM:} Các phương pháp tăng tốc như \textbf{LCM} ép buộc quá trình \textbf{reverse diffusion} phải hội tụ chỉ trong 4-5 bước. Đặc thù của chu trình cực ngắn này là cấu trúc tổng thể của bức ảnh bị "chốt cứng" ngay từ 1-2 bước khử nhiễu đầu tiên. Do đó, nếu phép \textbf{Latent Pre-Averaging} cung cấp một trạng thái tiềm ẩn bị nhiễu loạn bởi sự xung đột đặc trưng, lõi \textbf{LCM} sẽ ngay lập tức bị mất phương hướng. Khác với các \textbf{scheduler} tiêu chuẩn (như \textbf{DDIM}) có hàng chục bước để từ từ tự sửa sai, \textbf{LCM} sẽ khuếch đại sự sai lệch quỹ đạo này đến tận chu trình giải mã cuối cùng.
+\end{itemize}
+
+Hệ quả tất yếu của sự bất tương thích giữa khâu tiền xử lý thụ động và động cơ tăng tốc gượng ép là hệ thống rơi vào trạng thái vi phạm nghiêm trọng bài toán (\textbf{trade-off}). Cụ thể, việc ép buộc sinh ảnh nhanh trên các vùng đè lấn phức tạp sẽ:
+\begin{itemize}
+    \item Gây đứt gãy hình khối và phá vỡ tính toàn vẹn cấu trúc của vật thể tại ranh giới.
+    \item Tạo ra những dải chuyển tiếp phi logic, méo mó và sinh ra \textbf{artifacts} thị giác trầm trọng.
+    \item Làm giảm mạnh độ trung thực với điều kiện vùng do rò rỉ ngữ nghĩa.
+    \item Đánh mất tính liền mạch và độ tự nhiên của tổng thể bức ảnh.
+\end{itemize}
+
+Do đó, để giải quyết triệt để nút thắt này, bài toán đặt ra bao gồm hai khía cạnh:
+\begin{quote}
+1. Làm thế nào để phân rã và hòa trộn các vùng đè lấn thông qua một cơ chế \textbf{weighted masking} chủ động đo lường độ chênh lệch ngữ nghĩa, thay vì lan tỏa không gian một cách cơ học? \\
+2. Làm thế nào để thay thế lõi nội suy \textbf{LCM} rập khuôn bằng một động cơ có khả năng tự nắn chỉnh quỹ đạo lấy mẫu, duy trì được tính ổn định cấu trúc ngay cả khi đối mặt with các xung đột đặc trưng cục bộ?
+\end{quote}
+
+\section{Kết quả kỳ vọng}
+
+\noindent Đề tài kỳ vọng mang lại những đóng góp nền tảng về mặt lý thuyết và những đột phá về mặt thực nghiệm cho bài toán sinh ảnh đa vùng (\textbf{region-based}), cụ thể như sau:
+
+\begin{enumerate}
+    \item \textbf{Cơ sở toán học hóa việc hòa trộn vùng bằng phép trung bình có trọng số (\textbf{Weighted Averaging}):} 
+    Đề tài thay thế hoàn toàn kỹ thuật lấy trung bình tiềm ẩn thụ động dựa trên \textbf{Quantized Masks} của kiến trúc \textbf{SemanticDraw}. Thay vào đó, giá trị của các \textbf{latent token} tại vùng giao nhau sẽ được suy ra một cách chủ động thông qua hai bước tính toán:
+    \begin{itemize}
+        \item \textit{Bước 1 (Ước lượng trọng số từ tâm mỏ neo):} Tại mỗi vùng \textbf{mask}, hệ thống tự động xác định một tâm ngữ nghĩa $I$ dựa trên đỉnh kích hoạt của \textbf{cross-attention map}. Từ mốc $I$ này, trọng số của mọi \textbf{pixel} $i$ thuộc \textbf{mask} được tính bằng phân phối Gaussian đánh giá đồng thời khoảng cách không gian và khoảng cách ngữ nghĩa:
+        \[
+        W_t(i) = \frac{1}{\sqrt{2\pi}\sigma_D^2} \cdot e^{-\frac{\|p_i - p_I\|^2}{2\sigma_D^2}} \cdot \frac{1}{\sqrt{2\pi}\sigma_S^2} \cdot e^{-\frac{\|z_i - z_I\|^2}{2\sigma_S^2}}
+        \]
+        \item \textit{Bước 2 (Nội suy latent token tại vùng giao nhau):} Các trọng số $W_{t, k}$ thu được từ Bước 1 sẽ trở thành tham số trực tiếp cho phép tính \textbf{weighted average}. Giá trị của \textbf{latent token} tại điểm chồng lấn được tổng hợp từ đặc trưng $\bar{x}_k$ của $p$ vùng đè lên nhau theo công thức:
+        \[
+            \tilde{x}_{\text{overlap}} = \left( \sum_{k=1}^p W_{t,k} \odot \bar{x}_k \right) \odot \tilde{W}_t^{-1}    
+        \]
+    \end{itemize}
+    Cơ chế này đảm bảo: tại vùng giao cắt, \textbf{pixel} nào có cấu trúc ngữ nghĩa càng gần với tâm $I$ của vật thể chủ thì sẽ có trọng số càng lớn trong phép tính trung bình, qua đó cắt đứt hoàn toàn hiện tượng \textbf{feature leakage} giữa các vật thể.
+    
+    \item \textbf{Kiểm soát và tái định hình quỹ đạo sinh ảnh toàn cục:} 
+    Khẳng định tính ưu việt của thuật toán \textbf{Distillation++} trong vai trò \textbf{core generator} so với các phương pháp tăng tốc như \textbf{LCM}. Kết quả kỳ vọng sẽ chứng minh được việc dùng \textbf{Distillation++} kết hợp cùng phép tính \textbf{weighted average} kể trên sẽ tạo ra một tín hiệu điều khiển chủ động. Nó ép buộc quỹ đạo \textbf{reverse diffusion} của mô hình \textbf{Student} tại các điểm xung đột \textbf{latent token} phải hội tụ chặt chẽ về đa tạp dữ liệu chuẩn của mô hình \textbf{Teacher}, loại bỏ tận gốc sự biến dạng cấu trúc ở các bước khử nhiễu đầu tiên.
+    
+    \item \textbf{Tối ưu hóa sự đánh đổi giữa hiệu suất và chất lượng thị giác:} 
+    Về mặt thực nghiệm, việc nhúng hệ thống trọng số không gian - ngữ nghĩa vào lõi sinh ảnh \textbf{Distillation++} kỳ vọng sẽ thiết lập một giới hạn hiệu năng mới cho kiến trúc hệ thống, cụ thể:
+    \begin{itemize}
+        \item Khử hoàn toàn các \textbf{artifacts} và hiện tượng đứt gãy hình khối tại các ranh giới giao nhau phức tạp.
+        \item Tối đa hóa độ trung thực với điều kiện vùng và bảo đảm tính hòa quyện liền mạch của tổng thể bức ảnh.
+        \item Giải quyết bài toán \textbf{trade-off}: Đạt được sự nâng cấp vượt bậc về cấu trúc nhưng vẫn bảo toàn được mức \textbf{throughput} cao, đáp ứng nghiêm ngặt độ trễ thấp của các hệ thống sáng tạo thời gian thực.
+    \end{itemize}
+\end{enumerate}
+
+\section{Đề xuất}
+
+\noindent Phương pháp đề xuất thực hiện một cuộc tái cấu trúc toàn diện cơ chế sinh ảnh đa vùng (\textbf{region-based}) bằng cách thay thế hoàn toàn kỹ thuật nội suy thụ động \textbf{Latent Pre-Averaging}. Kiến trúc mới được chia thành ba giai đoạn tính toán với cơ sở toán học minh bạch như sau.
+
+\subsection{Giai đoạn 1: Trích xuất Semantic Anchor}
+Trong kiến trúc cũ, các\textbf{Quantized Masks} phát triển lan ra mù quáng theo mức độ nhiễu mà bỏ qua đặc tính vật thể. Để khắc phục, hệ thống của chúng tôi chủ động tìm kiếm một điểm mỏ neo ngữ nghĩa ($I$) cho mỗi vùng mặt nạ.
+
+Tại bước thời gian $t$, \textbf{cross-attention map} giữa văn bản điều kiện $y$ và trạng thái tiềm ẩn $x_t$ được trích xuất từ các tầng \textbf{Cross-Attention} của mạng U-Net:
+\[
+A_t = \text{CrossAttn}(x_t, y)
+\]
+Tâm ngữ nghĩa $I$ được định vị tự động tại tọa độ không gian có mức độ kích hoạt cao nhất trên ma trận $A_t$:
+\[
+I = \arg\max_{p} A_t(p, y_{\text{target}})
+\]
+Phép toán này đảm bảo mỏ neo không phải là trung tâm hình học đơn thuần, mà luôn nằm chính xác tại "trái tim" cấu trúc của vật thể đang được mạng U-Net chú ý tới.
+
+\subsection{Giai đoạn 2: Thiết lập Ma trận Weighted Mask qua Bộ lọc Song phương}
+Từ mỏ neo $I$, trọng số $W_t(i)$ cho mỗi \textbf{pixel} $i$ thuộc vùng mặt nạ được ước lượng thông qua một hàm phân phối Gaussian kết hợp (Bilateral Filter). Phương trình này tính toán mức độ phân rã theo hai chiều độc lập:
+\[
+W_t(i) = \underbrace{\frac{1}{\sqrt{2\pi}\sigma_D^2} e^{-\frac{\|p_i - p_I\|^2}{2\sigma_D^2}}}_{\text{(1) Suy giảm Không gian}} \cdot \underbrace{\frac{1}{\sqrt{2\pi}\sigma_S^2} e^{-\frac{\|z_i - z_I\|^2}{2\sigma_S^2}}}_{\text{(2) Suy giảm Ngữ nghĩa}}
+\]
+
+Phân tích chi tiết các đại lượng và cách thức định lượng tham số:
+\begin{itemize}
+    \item \textbf{Cụm suy giảm không gian:} Đo lường độ lệch tọa độ vật lý $\|p_i - p_I\|^2$ giữa \textbf{pixel} $i$ và tâm $I$. Ở đây, $\sigma_D^2$ đại diện cho phương sai của khoảng cách không gian. Tham số này được thiết lập cố định như \textbf{hyperparameter} để hệ thống hoặc người dùng có thể chủ động định chuẩn bán kính lan tỏa vật lý tự nhiên; khoảng cách vật lý càng xa tâm, lực hòa trộn càng giảm.
+    \item \textbf{Cụm suy giảm ngữ nghĩa:} Đo lường khoảng cách vector đặc trưng tiềm ẩn $\|z_i - z_I\|^2$. Khác với hằng số $\sigma_D$, đại lượng $\sigma_S$ được tính toán động (\textbf{adaptive}) tại mỗi bước thời gian. Cụ thể, $\sigma_S$ là độ lệch chuẩn của các \textbf{latent token} $z_k$ nằm trong vùng mặt nạ $M$ (với $N$ là tổng số điểm ảnh của vùng), được tính bằng công thức thống kê:
+    \[
+    \sigma_S = \sqrt{\frac{1}{N} \sum_{k \in M} \|z_k - \mu_z\|^2}, \quad \text{với} \quad \mu_z = \frac{1}{N} \sum_{k \in M} z_k
+    \]
+    Việc ánh xạ trực tiếp từ \textbf{latent space} giúp $\sigma_S$ biến thành một màng lọc tự thích ứng với độ phân tán giá trị thực tế của từng loại vật thể để bảo vệ ranh giới một cách chính xác nhất.
+\end{itemize}
+\textbf{Động lực toán học:} Khi quá trình nội suy chạm tới biên giới của một vật thể khác, sự đột biến về đặc trưng $z$ sẽ đẩy $\|z_i - z_I\|^2$ lên rất cao so với bình phương độ lệch chuẩn $\sigma_S^2$. Ngay lập tức, hàm số mũ $e^{-x}$ sẽ ép cụm (2) tiến sát về $0$, từ đó triệt tiêu hoàn toàn trọng số $W_t(i)$ tại điểm đó. Cơ chế này vạch ra một ranh giới cắt đứt cực kỳ sắc lẹm, triệt tiêu tận gốc hiện tượng rò rỉ đặc trưng (\textbf{feature leakage}) thường thấy ở phương pháp cũ.
+
+\subsection{Giai đoạn 3: Lõi Distillation++ và Nội suy Trung bình có trọng số}
+Để ngăn chặn việc mô hình làm mất phương hướng cấu trúc ở các bước khử nhiễu đầu tiên, hệ thống thay thế bộ tăng tốc \textbf{LCM} bằng thuật toán \textbf{Distillation++} làm \textbf{core generator}. Tại mỗi vùng $k$, lõi này sẽ xuất ra một đặc trưng hình khối $\bar{x}_k$ bám sát tuyệt đối vào đa tạp dữ liệu của mô hình \textbf{Teacher}:
+\[
+\bar{x}_k = F_{\text{Distill}}(x_t, y_k; \theta_{\text{student}}, \theta_{\text{teacher}})
+\]
+
+Thay vì dùng phương pháp cộng dồn rập khuôn \textbf{Latent Pre-Averaging}, sự xung đột tại các vùng chồng lấn được giải quyết bằng phép tính \textbf{Weighted Averaging}. Đầu tiên, hệ thống tính toán ma trận tổng trọng số chuẩn hóa $\tilde{W}_t$ từ các trọng số $W_{t,k}$ của $p$ vùng giao nhau:
+\[
+\tilde{W}_t = \sum_{k=1}^p W_{t,k}
+\]
+
+Sau đó, giá trị của \textbf{latent token} tại vùng đè lấn được nội suy chủ động bằng phép nhân từng phần tử với ma trận nghịch đảo của tổng trọng số:
+\[
+\tilde{x}_{\text{overlap}} = \left( \sum_{k=1}^p W_{t,k} \odot \bar{x}_k \right) \odot \tilde{W}_t^{-1}
+\]
+
+Cuối cùng, trạng thái tiềm ẩn tinh chỉnh này mới được cộng thêm lượng nhiễu bù $\eta_{t-1}\xi$ để bảo toàn phương sai cho quỹ đạo lấy mẫu trước khi chuyển sang bước $t-1$:
+\[
+x_{t-1} = \tilde{x}_{\text{overlap}} + \eta_{t-1}\xi
+\]
+
+\textbf{Tóm tắt cơ chế:} Toán học của đề xuất thiết lập một quy tắc cạnh tranh công bằng: Tại vùng chồng lấn, \textbf{pixel} nào sở hữu đặc trưng ngữ nghĩa gần với tâm $I$ của vật thể hơn thì hàm Gaussian sẽ cấp cho nó mức trọng số $W_{t,k}$ áp đảo. Do đó, nó sẽ giành quyền chi phối giá trị cuối cùng của \textbf{latent token} tại tọa độ đó trong quá trình phân bổ qua $\tilde{W}_t^{-1}$, tạo ra sự nhượng bộ bề mặt vô cùng mượt mà và tự nhiên.
+
+\section{Thí nghiệm}
+
+\subsection{Dataset Setup}
+Thí nghiệm được thực hiện trên \textbf{COCO validation dataset}. Phương pháp trích xuất dữ liệu điều kiện được thiết lập theo quy chuẩn sau:
+\begin{itemize}
+    \item \textbf{Background:} Sử dụng trực tiếp các \textbf{image captions} có sẵn trong tập COCO làm văn bản điều kiện.
+    \item \textbf{Foreground:} Trích xuất các \textbf{object masks} cùng \textbf{categories} tương ứng để làm điều kiện cho vùng chồng lấn.
+    \item \textbf{Preprocessing:} Do ảnh trong tập COCO có kích thước nhỏ hơn so với chuẩn huấn luyện của các mô hình Diffusion, các mặt nạ vật thể sẽ được nội suy phóng to bằng \textbf{nearest neighbor interpolation} để khớp với kích thước phân giải mặc định ($512 \times 512$ đối với SD1.5 hoặc $1024 \times 1024$ đối với SDXL/SD3).
+\end{itemize}
+
+\subsection{Thí nghiệm 1: Đánh giá Cơ chế Semantic Anchor và Ma trận Weighted Mask}
+\begin{itemize}
+    \item \textbf{Trực quan hóa Semantic Anchor $I$:} Xuất các \textbf{cross-attention maps} từ U-Net để xác nhận điểm $I$ hội tụ đúng vào vùng lõi ngữ nghĩa của vật thể.
+    \item \textbf{Phân tích Heatmap của Weighted Mask ($W_t$):} Trực quan hóa ma trận trọng số $W_t$ tại ranh giới giao nhau. \textbf{Kết quả mong đợi:} Trọng số sẽ thể hiện sự sụt giảm đột ngột (tiến về 0) ngay khi chạm tới biên giới vật thể khác do sự thay đổi của $\sigma_S$ trong \textbf{latent space}, chứng minh khả năng dập tắt triệt để \textbf{feature leakage}.
+\end{itemize}
+
+\subsection{Thí nghiệm 2: So sánh Năng lực Kiểm soát của Core Generator}
+Thực hiện so sánh chéo hệ thống đề xuất với các baseline đã được công bố:
+\begin{enumerate}
+    \item \textbf{Baseline 1 (Chậm nhưng cấu trúc tốt):} Kiến trúc \textbf{MultiDiffusion} gốc sử dụng \textbf{Latent Pre-Averaging} kết hợp bộ lấy mẫu \textbf{DDIM} tiêu chuẩn (\textbf{50 bước}).
+    \item \textbf{Baseline 2 (Nhanh nhưng vỡ cấu trúc):} \textbf{MultiDiffusion} kết hợp các động cơ tăng tốc lấy mẫu như \textbf{LCM, Hyper-SD, hoặc SDXL-Lightning} ($4-5$ bước). Dễ gây đứt gãy và rò rỉ màu sắc tại vùng \textbf{overlap}.
+    \item \textbf{Ours:} Lõi \textbf{Distillation++} kết hợp \textbf{Weighted Averaging} ($4-5$ bước).
+\end{enumerate}
+\textbf{Kết quả mong đợi:} Lõi \textbf{Distillation++} sẽ kiểm chứng được năng lực ép \textbf{latent tokens} giữ vững quỹ đạo, giúp hệ thống đạt tốc độ tiệm cận thời gian thực (như Baseline 2) mà không bị vỡ hình hay xuất hiện \textbf{artifacts} gượng ép tại vùng giao nhau (đạt chất lượng hình khối tương đương hoặc vượt Baseline 1).
+
+\subsection{Thí nghiệm 3: Ablation Study}
+\begin{itemize}
+    \item \textbf{Đánh giá độ nhạy của siêu tham số không gian ($\sigma_D$):} Thử nghiệm đẩy $\sigma_D \to \infty$ (bỏ rào cản vật lý). \textit{Kết quả mong đợi:} Hiện tượng nhiễu loạn cục bộ xảy ra khi các vùng cách xa nhau nhưng có chung ngữ nghĩa bị trộn lẫn sai lệch.
+    \item \textbf{Bỏ rào cản ngữ nghĩa ($\sigma_S \to \infty$):} Thuật toán thoái lui về dạng làm mờ không gian cơ học giống \textbf{Quantized Masks}. \textit{Kết quả mong đợi:} Tái diễn \textbf{feature leakage}.
+    \item \textbf{Bỏ Semantic Anchor ($I$):} Thay tâm $I$ bằng \textbf{geometric center}. \textit{Kết quả mong đợi:} Các vật thể bị biến dạng và phân bổ trọng số sai lệch.
+    \item \textbf{Bỏ cơ chế Weighted Averaging:} Dùng \textbf{Distillation++} nhưng quay lại \textbf{Latent Pre-Averaging}. \textit{Kết quả mong đợi:} Xung đột đặc trưng trực tiếp khiến mô hình sụp đổ cấu trúc ở các bước khử nhiễu thấp.
+\end{itemize}
+
+\subsection{Tasks and Metrics}
+Hệ thống sẽ được triển khai trên hai \textbf{tasks} cốt lõi:
+\begin{itemize}
+    \item \textbf{Region-based text-to-image generation} với tỷ lệ \textbf{overlap} lớn.
+    \item \textbf{Panorama generation} với kích thước phi tiêu chuẩn ($512 \times 4608$) nhằm kiểm tra độ ổn định của cấu trúc phân giải cực cao.
+\end{itemize}
+
+Các \textbf{metrics} được sử dụng nghiêm ngặt theo chuẩn bài báo gốc:
+\begin{itemize}
+    \item \textbf{Chất lượng hình ảnh tổng thể:} Đo lường độ chân thực của ảnh sinh ra thông qua \textbf{FID}) và \textbf{IS}.
+    \item \textbf{Mask-fidelity:} 
+    \begin{itemize}
+        \item \textbf{CLIPfg:} Điểm số CLIP trung bình tính giữa mỗi bức ảnh được sinh ra và tập hợp các nhãn từ khóa của các vùng tiền cảnh tương ứng.
+        \item \textbf{CLIPbg:} Điểm số CLIP đo lường sự tương quan giữa toàn bộ bức ảnh và đoạn chú thích COCO captions của vùng nền.
+    \end{itemize}
+    \item \textbf{Hiệu năng phần cứng:} Đo lường \textbf{Throughput} (FPS) và \textbf{Time} (giây) được thực thi trên cùng một hệ thống GPU tiêu chuẩn (ví dụ: RTX 2080 Ti) nhằm đảm bảo hệ thống đáp ứng tốt yêu cầu tương tác thời gian thực.
+    \item \textbf{User Study:} Đánh giá định tính thông qua \textbf{Preference} của người dùng về chất lượng hình ảnh, độ liền mạch và tính tự nhiên của tổng thể bức ảnh so với các phương pháp Baseline.
+\end{itemize}
+
+\section{Pseudocode}
+\begin{algorithm}[H] 
+\caption{Tính toán Adaptive Weighted Mask} 
+\label{alg:weighted_mask} 
+\begin{algorithmic}
+\Require Trạng thái latent state hiện tại $x_t$, văn bản conditioning text mục tiêu $y$, binary mask $M$, hyperparameter space variance $\sigma_D$
+\Ensure Ma trận weighted mask $W_t$
+
+\Statex \vspace{0.2cm} % --- Dãn cách phần Require/Ensure với nội dung ---
+
+\Statex \textbf{// Giai đoạn 1: Trích xuất Semantic Anchor}
+\State Trích xuất bản đồ \textbf{cross-attention map} từ mạng U-Net:
+\Statex \hfil $\displaystyle A_t \gets \text{CrossAttn}(x_t, y)$ \hfil
+
+\Statex \vspace{0.15cm} % Khoảng nghỉ giữa các bước
+
+\State Định vị \textbf{semantic anchor} $I$:
+\Statex \hfil $\displaystyle I \gets \arg\max_{p \in M} A_t(p)$ \hfil
+
+\Statex \vspace{0.4cm} % --- Dãn cách lớn giữa các Giai đoạn ---
+
+\Statex \textbf{// Giai đoạn 2: Ước lượng Adaptive Semantic Variance}
+\State Tính đặc trưng trung bình $\mu_z$ của các \textbf{latent token} trong vùng mask:
+\Statex \hfil $\displaystyle \mu_z \gets \frac{1}{|M|} \sum_{j \in M} z_j$ \hfil
+
+\Statex \vspace{0.15cm}
+
+\State Ước lượng độ lệch chuẩn ngữ nghĩa $\sigma_S$ trong \textbf{latent space}:
+\Statex \hfil $\displaystyle \sigma_S \gets \sqrt{\frac{1}{|M|} \sum_{j \in M} \|z_j - \mu_z\|^2}$ \hfil
+
+\Statex \vspace{0.4cm} % --- Dãn cách lớn giữa các Giai đoạn ---
+
+\Statex \textbf{// Giai đoạn 3: Tính trọng số Mask}
+\State Khởi tạo ma trận trọng số $W_t$ với các giá trị 0
+
+\Statex \vspace{0.1cm}
+
+\For{\textbf{each} pixel $i \in M$}
+    \Statex \vspace{0.1cm} % Dãn cách nhẹ đầu vòng lặp
+
+    \State Tính toán spatial penalty:
+    \Statex \hfil $\displaystyle P_{\text{space}} \gets \frac{1}{\sqrt{2\pi}\sigma_D^2} \exp\left(-\frac{\|p_i - p_I\|^2}{2\sigma_D^2}\right)$ \hfil
+    
+    \Statex \vspace{0.25cm} % Tách biệt rõ 2 penalty
+    
+    \State Tính toán semantic penalty:
+    \Statex \hfil $\displaystyle P_{\text{sem}} \gets \frac{1}{\sqrt{2\pi}\sigma_S^2} \exp\left(-\frac{\|z_i - z_I\|^2}{2\sigma_S^2}\right)$ \hfil
+    
+    \Statex \vspace{0.25cm}
+    
+    \State Gán trọng số localized weight:
+    \Statex \hfil $\displaystyle W_t(i) \gets P_{\text{space}} \cdot P_{\text{sem}}$ \hfil
+    
+    \Statex \vspace{0.1cm} % Dãn cách nhẹ trước khi đóng vòng lặp
+\EndFor
+
+\Statex \vspace{0.3cm} % Dãn cách trước kết quả trả về
+
+\State \Return $W_t$
+\end{algorithmic} 
+\end{algorithm}
