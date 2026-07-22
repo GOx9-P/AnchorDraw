@@ -1,0 +1,51 @@
+# AnchorDraw
+
+```text
+AnchorDraw/
+|-- .gitignore                                           # Quy tắc bỏ qua cache, dataset lớn, checkpoint, output thí nghiệm và file tạm.
+|-- README.md                                            # Cây thư mục của repository và ý nghĩa ngắn của từng file/folder.
+|-- Baseline/                                            # Chứa source code baseline gốc dùng để kế thừa và đối chiếu.
+|   `-- semantic-draw-main/                              # Folder wrapper của project SemanticDraw gốc.
+|       `-- semantic-draw-main/                          # Source chính của SemanticDraw baseline.
+|           |-- assets/                                  # Tài nguyên minh họa/demo đi kèm baseline.
+|           |-- demo/                                    # Script hoặc notebook demo của baseline.
+|           |-- notebooks/                               # Notebook thử nghiệm/phân tích của baseline.
+|           |-- src/                                     # Source code lõi của baseline SemanticDraw.
+|           |   |-- model/                               # Pipeline/model SemanticDraw và các module generation chính.
+|           |   |-- data.py                              # Helper data/input của baseline.
+|           |   |-- ipython_util.py                      # Tiện ích chạy trong môi trường notebook/IPython.
+|           |   |-- prompt_util.py                       # Tiện ích xử lý prompt trong baseline.
+|           |   |-- util.py                              # Hàm tiện ích chung của baseline.
+|           |   `-- __init__.py                          # Khai báo package Python cho `src`.
+|           |-- .gitignore                               # Quy tắc ignore riêng của baseline gốc.
+|           |-- LICENSE                                  # License của baseline SemanticDraw.
+|           |-- README.md                                # Hướng dẫn chính của baseline SemanticDraw.
+|           |-- README_old.md                            # README cũ/phiên bản lưu trữ của baseline.
+|           `-- requirement.txt                          # Danh sách thư viện của baseline gốc.
+`-- Ours/                                                # Phần đề xuất, tài liệu và code mới của AnchorDraw.
+    |-- data_manifests/                                  # Manifest cố định cho input COCO của thí nghiệm.
+    |   |-- EDA.md                                       # Giải thích cấu trúc manifest và cách dùng.
+    |   `-- coco_val2017_multidiffusion_coco_all_512x512_all.jsonl  # 1073 sample COCO val2017 hợp lệ cho SD1.5 512x512.
+    |-- documents/                                       # Tài liệu research/proposal/flowchart của hướng cải tiến.
+    |   |-- Flow_chart.png                               # Flowchart nháp của hệ thống AnchorDraw.
+    |   |-- Plan_SemanticAnchor.pdf                      # Bản plan/proposal dạng PDF cho hướng SemanticAnchor.
+    |   |-- Proposal.pdf                                 # Proposal nghiên cứu chính.
+    |   `-- proposal.txt                                 # Proposal dạng text để đọc/search nhanh.
+    |-- src/                                             # Source code xây dựng cho phần thí nghiệm.
+    |   `-- data/                                        # Package dataloader COCO cho SemanticDraw/AnchorDraw.
+    |       |-- README.md                                 # Giải thích riêng từng file trong package dataloader.
+    |       |-- __init__.py                               # Export API package `data`.
+    |       |-- adapters.py                               # Chuyển batch dataloader sang input gọn cho SemanticDraw.
+    |       |-- build_manifest.py                         # CLI build manifest COCO từ annotations gốc.
+    |       |-- coco_mask_utils.py                        # Decode segmentation, resize mask, chuyển mask sang tensor.
+    |       |-- coco_profiles.py                          # Preset/profile thí nghiệm như `multidiffusion_coco_all`.
+    |       |-- coco_region_collate.py                    # Collate batch có số region khác nhau bằng padding.
+    |       |-- coco_region_config.py                     # Dataclass chứa toàn bộ config dataloader/sampling.
+    |       |-- coco_region_dataset.py                    # File chính chạy PyTorch Dataset/DataLoader.
+    |       |-- coco_region_manifest.py                   # Load manifest và tạo COCO index để trace ID.
+    |       |-- coco_region_sampler.py                    # Filter COCO và tạo record manifest.
+    |       |-- download_coco.py                          # Tiện ích tải COCO nếu cần setup lại data.
+    |       `-- visualize.py                            # Xuất preview/overlay mask để debug data.
+    |-- first_2_instances_val2017_annotations.json       # Mẫu JSON trích từ `instances_val2017.json` để EDA/debug.
+    `-- requirements.txt                                 # Thư viện cần thiết cho phần code trong `Ours`.
+```

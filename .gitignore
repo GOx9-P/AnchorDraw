@@ -1,0 +1,92 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Logs
+*.log
+logs/
+wandb/
+mlruns/
+tensorboard/
+runs/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Data and large local datasets
+/datasets/
+/data/
+/coco/
+/COCO/
+/annotations_trainval2017/
+/val2017/
+/train2017/
+/test2017/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Model checkpoints and weights
+checkpoints/
+ckpts/
+weights/
+models/
+*.ckpt
+*.safetensors
+*.pt
+*.pth
+*.bin
+
+# Generated experiment artifacts
+outputs/
+results/
+samples/
+generated/
+generations/
+eval_outputs/
+metrics/
+previews/
+
+# Local caches
+cache/
+.cache/
+Ours/cache/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+Explain_baseline/
+plan.md
