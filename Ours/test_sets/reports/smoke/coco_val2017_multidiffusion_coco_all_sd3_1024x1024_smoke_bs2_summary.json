@@ -1,0 +1,62 @@
+{
+  "batch_size": 2,
+  "expected_first_batch_mask_shape": [
+    2,
+    4,
+    1,
+    1024,
+    1024
+  ],
+  "expected_num_dataloader_batches": 1,
+  "image_ids": [
+    776,
+    802
+  ],
+  "model_family_distribution": {
+    "sd3": 2
+  },
+  "num_records": 2,
+  "object_count_distribution": {
+    "2": 1,
+    "4": 1
+  },
+  "output_manifest": "Ours\\test_sets\\manifests\\smoke\\coco_val2017_multidiffusion_coco_all_sd3_1024x1024_smoke_bs2.jsonl",
+  "preview_status": {
+    "enabled": true,
+    "error": null,
+    "exported": 2,
+    "image_dir": "COCO\\val2017\\val2017",
+    "instances_json": "COCO\\annotations_trainval2017\\annotations\\instances_val2017.json",
+    "preview_limit": 8
+  },
+  "protocol_distribution": {
+    "multidiffusion_coco_all": 2
+  },
+  "sample_ids": [
+    "coco_val2017_000000000776_multidiffusion_coco_all",
+    "coco_val2017_000000000802_multidiffusion_coco_all"
+  ],
+  "source_manifest": "Ours\\data_manifests\\coco_val2017_multidiffusion_coco_all_sd3_1024x1024_all.jsonl",
+  "subset_name": "smoke",
+  "target_size_distribution": {
+    "1024x1024": 2
+  },
+  "top_categories": [
+    {
+      "category": "teddy bear",
+      "count": 3
+    },
+    {
+      "category": "bed",
+      "count": 1
+    },
+    {
+      "category": "refrigerator",
+      "count": 1
+    },
+    {
+      "category": "oven",
+      "count": 1
+    }
+  ]
+}

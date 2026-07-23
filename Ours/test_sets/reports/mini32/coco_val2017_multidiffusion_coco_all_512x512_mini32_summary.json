@@ -1,0 +1,187 @@
+{
+  "batch_size": 8,
+  "expected_first_batch_mask_shape": [
+    8,
+    4,
+    1,
+    512,
+    512
+  ],
+  "expected_num_dataloader_batches": 4,
+  "image_ids": [
+    776,
+    802,
+    1503,
+    37777,
+    66817,
+    74200,
+    113720,
+    119452,
+    143998,
+    147223,
+    181499,
+    184384,
+    214200,
+    229659,
+    244833,
+    252294,
+    291664,
+    312192,
+    342186,
+    359219,
+    377946,
+    379842,
+    427034,
+    445248,
+    458054,
+    460229,
+    501243,
+    517687,
+    533145,
+    574315,
+    580418,
+    581781
+  ],
+  "model_family_distribution": {
+    "sd15": 32
+  },
+  "num_records": 32,
+  "object_count_distribution": {
+    "2": 16,
+    "3": 10,
+    "4": 6
+  },
+  "output_manifest": "Ours\\test_sets\\manifests\\mini32\\coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl",
+  "preview_status": {
+    "enabled": true,
+    "error": null,
+    "exported": 8,
+    "image_dir": "COCO\\val2017\\val2017",
+    "instances_json": "COCO\\annotations_trainval2017\\annotations\\instances_val2017.json",
+    "preview_limit": 8
+  },
+  "protocol_distribution": {
+    "multidiffusion_coco_all": 32
+  },
+  "sample_ids": [
+    "coco_val2017_000000000776_multidiffusion_coco_all",
+    "coco_val2017_000000000802_multidiffusion_coco_all",
+    "coco_val2017_000000001503_multidiffusion_coco_all",
+    "coco_val2017_000000037777_multidiffusion_coco_all",
+    "coco_val2017_000000066817_multidiffusion_coco_all",
+    "coco_val2017_000000074200_multidiffusion_coco_all",
+    "coco_val2017_000000113720_multidiffusion_coco_all",
+    "coco_val2017_000000119452_multidiffusion_coco_all",
+    "coco_val2017_000000143998_multidiffusion_coco_all",
+    "coco_val2017_000000147223_multidiffusion_coco_all",
+    "coco_val2017_000000181499_multidiffusion_coco_all",
+    "coco_val2017_000000184384_multidiffusion_coco_all",
+    "coco_val2017_000000214200_multidiffusion_coco_all",
+    "coco_val2017_000000229659_multidiffusion_coco_all",
+    "coco_val2017_000000244833_multidiffusion_coco_all",
+    "coco_val2017_000000252294_multidiffusion_coco_all",
+    "coco_val2017_000000291664_multidiffusion_coco_all",
+    "coco_val2017_000000312192_multidiffusion_coco_all",
+    "coco_val2017_000000342186_multidiffusion_coco_all",
+    "coco_val2017_000000359219_multidiffusion_coco_all",
+    "coco_val2017_000000377946_multidiffusion_coco_all",
+    "coco_val2017_000000379842_multidiffusion_coco_all",
+    "coco_val2017_000000427034_multidiffusion_coco_all",
+    "coco_val2017_000000445248_multidiffusion_coco_all",
+    "coco_val2017_000000458054_multidiffusion_coco_all",
+    "coco_val2017_000000460229_multidiffusion_coco_all",
+    "coco_val2017_000000501243_multidiffusion_coco_all",
+    "coco_val2017_000000517687_multidiffusion_coco_all",
+    "coco_val2017_000000533145_multidiffusion_coco_all",
+    "coco_val2017_000000574315_multidiffusion_coco_all",
+    "coco_val2017_000000580418_multidiffusion_coco_all",
+    "coco_val2017_000000581781_multidiffusion_coco_all"
+  ],
+  "source_manifest": "Ours\\data_manifests\\coco_val2017_multidiffusion_coco_all_512x512_all.jsonl",
+  "subset_name": "mini32",
+  "target_size_distribution": {
+    "512x512": 32
+  },
+  "top_categories": [
+    {
+      "category": "dining table",
+      "count": 9
+    },
+    {
+      "category": "laptop",
+      "count": 5
+    },
+    {
+      "category": "pizza",
+      "count": 5
+    },
+    {
+      "category": "toilet",
+      "count": 4
+    },
+    {
+      "category": "teddy bear",
+      "count": 3
+    },
+    {
+      "category": "bed",
+      "count": 3
+    },
+    {
+      "category": "tv",
+      "count": 3
+    },
+    {
+      "category": "keyboard",
+      "count": 3
+    },
+    {
+      "category": "banana",
+      "count": 3
+    },
+    {
+      "category": "car",
+      "count": 3
+    },
+    {
+      "category": "elephant",
+      "count": 3
+    },
+    {
+      "category": "cow",
+      "count": 3
+    },
+    {
+      "category": "refrigerator",
+      "count": 2
+    },
+    {
+      "category": "oven",
+      "count": 2
+    },
+    {
+      "category": "bowl",
+      "count": 2
+    },
+    {
+      "category": "surfboard",
+      "count": 2
+    },
+    {
+      "category": "orange",
+      "count": 2
+    },
+    {
+      "category": "knife",
+      "count": 2
+    },
+    {
+      "category": "carrot",
+      "count": 2
+    },
+    {
+      "category": "stop sign",
+      "count": 2
+    }
+  ]
+}

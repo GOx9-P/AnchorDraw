@@ -23,9 +23,10 @@ AnchorDraw/
 |           |-- README_old.md                            # README cũ/phiên bản lưu trữ của baseline.
 |           `-- requirement.txt                          # Danh sách thư viện của baseline gốc.
 `-- Ours/                                                # Phần đề xuất, tài liệu và code mới của AnchorDraw.
-    |-- data_manifests/                                  # Manifest cố định cho input COCO của thí nghiệm.
+    |-- data_manifests/                                  # Ba manifest chính cho input COCO benchmark theo model family.
+    |   |-- README.md                                    # Index ba manifest chính và protocol dùng chung.
     |   |-- EDA.md                                       # Giải thích cấu trúc manifest và cách dùng.
-    |   `-- coco_val2017_multidiffusion_coco_all_512x512_all.jsonl  # 1073 sample COCO val2017 hợp lệ cho SD1.5 512x512.
+    |   `-- coco_val2017_multidiffusion_coco_all_*.jsonl # Full manifest chính cho SD1.5, SDXL và SD3.
     |-- documents/                                       # Tài liệu research/proposal/flowchart của hướng cải tiến.
     |   |-- Flow_chart.png                               # Flowchart nháp của hệ thống AnchorDraw.
     |   |-- Plan_SemanticAnchor.pdf                      # Bản plan/proposal dạng PDF cho hướng SemanticAnchor.
@@ -37,6 +38,7 @@ AnchorDraw/
     |       |-- __init__.py                               # Export API package `data`.
     |       |-- adapters.py                               # Chuyển batch dataloader sang input gọn cho SemanticDraw.
     |       |-- build_manifest.py                         # CLI build manifest COCO từ annotations gốc.
+    |       |-- build_test_sets.py                        # CLI build smoke/mini32 subset từ full manifest chính.
     |       |-- coco_mask_utils.py                        # Decode segmentation, resize mask, chuyển mask sang tensor.
     |       |-- coco_profiles.py                          # Preset/profile thí nghiệm như `multidiffusion_coco_all`.
     |       |-- coco_region_collate.py                    # Collate batch có số region khác nhau bằng padding.
@@ -46,6 +48,11 @@ AnchorDraw/
     |       |-- coco_region_sampler.py                    # Filter COCO và tạo record manifest.
     |       |-- download_coco.py                          # Tiện ích tải COCO nếu cần setup lại data.
     |       `-- visualize.py                            # Xuất preview/overlay mask để debug data.
+    |-- test_sets/                                      # Smoke và mini32 manifest để validate hệ thống trước benchmark full.
+    |   |-- README.md                                    # Giải thích cách dùng smoke/mini32.
+    |   |-- manifests/                                  # Subset manifest dùng trực tiếp bởi dataloader.
+    |   |-- reports/                                    # Summary JSON của từng subset manifest.
+    |   `-- previews/                                   # Overlay ảnh COCO + mask, sinh local nếu đủ dependency.
     |-- first_2_instances_val2017_annotations.json       # Mẫu JSON trích từ `instances_val2017.json` để EDA/debug.
     `-- requirements.txt                                 # Thư viện cần thiết cho phần code trong `Ours`.
 ```

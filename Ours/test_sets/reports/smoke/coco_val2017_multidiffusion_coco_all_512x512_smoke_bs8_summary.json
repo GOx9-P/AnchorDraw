@@ -1,0 +1,111 @@
+{
+  "batch_size": 8,
+  "expected_first_batch_mask_shape": [
+    8,
+    4,
+    1,
+    512,
+    512
+  ],
+  "expected_num_dataloader_batches": 1,
+  "image_ids": [
+    776,
+    802,
+    1503,
+    271728,
+    279145,
+    574315,
+    580418,
+    581781
+  ],
+  "model_family_distribution": {
+    "sd15": 8
+  },
+  "num_records": 8,
+  "object_count_distribution": {
+    "2": 3,
+    "3": 3,
+    "4": 2
+  },
+  "output_manifest": "Ours\\test_sets\\manifests\\smoke\\coco_val2017_multidiffusion_coco_all_512x512_smoke_bs8.jsonl",
+  "preview_status": {
+    "enabled": true,
+    "error": null,
+    "exported": 8,
+    "image_dir": "COCO\\val2017\\val2017",
+    "instances_json": "COCO\\annotations_trainval2017\\annotations\\instances_val2017.json",
+    "preview_limit": 8
+  },
+  "protocol_distribution": {
+    "multidiffusion_coco_all": 8
+  },
+  "sample_ids": [
+    "coco_val2017_000000000776_multidiffusion_coco_all",
+    "coco_val2017_000000000802_multidiffusion_coco_all",
+    "coco_val2017_000000001503_multidiffusion_coco_all",
+    "coco_val2017_000000271728_multidiffusion_coco_all",
+    "coco_val2017_000000279145_multidiffusion_coco_all",
+    "coco_val2017_000000574315_multidiffusion_coco_all",
+    "coco_val2017_000000580418_multidiffusion_coco_all",
+    "coco_val2017_000000581781_multidiffusion_coco_all"
+  ],
+  "source_manifest": "Ours\\data_manifests\\coco_val2017_multidiffusion_coco_all_512x512_all.jsonl",
+  "subset_name": "smoke",
+  "target_size_distribution": {
+    "512x512": 8
+  },
+  "top_categories": [
+    {
+      "category": "teddy bear",
+      "count": 3
+    },
+    {
+      "category": "couch",
+      "count": 3
+    },
+    {
+      "category": "cow",
+      "count": 3
+    },
+    {
+      "category": "laptop",
+      "count": 2
+    },
+    {
+      "category": "keyboard",
+      "count": 2
+    },
+    {
+      "category": "potted plant",
+      "count": 2
+    },
+    {
+      "category": "banana",
+      "count": 2
+    },
+    {
+      "category": "bed",
+      "count": 1
+    },
+    {
+      "category": "refrigerator",
+      "count": 1
+    },
+    {
+      "category": "oven",
+      "count": 1
+    },
+    {
+      "category": "tv",
+      "count": 1
+    },
+    {
+      "category": "bench",
+      "count": 1
+    },
+    {
+      "category": "cat",
+      "count": 1
+    }
+  ]
+}

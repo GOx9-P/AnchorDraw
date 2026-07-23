@@ -8,16 +8,22 @@ Scope của file này là cho người mới đọc. Nếu chỉ cần nhớ m�
 
 ```text
 Ours/data_manifests/
+├── README.md
 ├── EDA.md
-└── coco_val2017_multidiffusion_coco_all_512x512_all.jsonl
+├── coco_val2017_multidiffusion_coco_all_512x512_all.jsonl
+├── coco_val2017_multidiffusion_coco_all_sdxl_1024x1024_all.jsonl
+└── coco_val2017_multidiffusion_coco_all_sd3_1024x1024_all.jsonl
 ```
 
 Trong đó:
 
-- `EDA.md`: file giải thích này.
-- `coco_val2017_multidiffusion_coco_all_512x512_all.jsonl`: manifest đang dùng cho thí nghiệm COCO validation theo protocol `multidiffusion_coco_all`.
+- `README.md`: index ngắn liệt kê 3 manifest chính hiện có.
+- `EDA.md`: file giải thích chi tiết cấu trúc manifest.
+- `coco_val2017_multidiffusion_coco_all_512x512_all.jsonl`: manifest benchmark common input cho SD1.5 `512x512`.
+- `coco_val2017_multidiffusion_coco_all_sdxl_1024x1024_all.jsonl`: manifest benchmark common input cho SDXL `1024x1024`.
+- `coco_val2017_multidiffusion_coco_all_sd3_1024x1024_all.jsonl`: manifest benchmark common input cho SD3 `1024x1024`.
 
-Hiện tại folder này chỉ có một manifest. Về sau nếu tạo thêm thí nghiệm khác, folder này có thể có nhiều file `.jsonl`, ví dụ cho `sdxl`, `sd3`, profile overlap stress, weighted mask, hoặc subset đặc biệt.
+Hiện tại folder này chỉ giữ manifest chính cho benchmark. Các biến thể về method, sampler, hoặc ablation không cần manifest riêng vì chúng dùng cùng input data. Smoke test nên được sinh từ 3 manifest chính này, không sinh trực tiếp lại từ COCO gốc.
 
 ## 2. Manifest là gì?
 

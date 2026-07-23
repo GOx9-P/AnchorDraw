@@ -42,12 +42,24 @@ def semanticdraw_sd3(coco_root: PathLike, **overrides: object) -> COCORegionConf
     return config.copy_with(**overrides)
 
 
-def multidiffusion_coco_all(coco_root: PathLike, **overrides: object) -> COCORegionConfig:
+def _target_size_for_model(model_family: ModelFamily) -> tuple[int, int]:
+    return (512, 512) if model_family == "sd15" else (1024, 1024)
+
+
+def _batch_size_for_model(model_family: ModelFamily) -> int:
+    return 8 if model_family == "sd15" else 2
+
+
+def multidiffusion_coco_all(
+    coco_root: PathLike,
+    model_family: ModelFamily = "sd15",
+    **overrides: object,
+) -> COCORegionConfig:
     config = COCORegionConfig(
         coco_root=Path(coco_root),
         profile="multidiffusion_coco_all",
-        model_family="sd15",
-        target_size=(512, 512),
+        model_family=model_family,
+        target_size=_target_size_for_model(model_family),
         seed=42,
         subset_size=None,
         min_objects=2,
@@ -59,14 +71,18 @@ def multidiffusion_coco_all(coco_root: PathLike, **overrides: object) -> COCOReg
         prompt_template="a {label}",
         caption_policy="first",
         object_policy="largest",
-        batch_size=8,
+        batch_size=_batch_size_for_model(model_family),
     )
     return config.copy_with(**overrides)
 
 
-def multidiffusion_coco_1k(coco_root: PathLike, **overrides: object) -> COCORegionConfig:
+def multidiffusion_coco_1k(
+    coco_root: PathLike,
+    model_family: ModelFamily = "sd15",
+    **overrides: object,
+) -> COCORegionConfig:
     """Backward-compatible name. It now returns all valid COCO val samples."""
-    return multidiffusion_coco_all(coco_root, **overrides)
+    return multidiffusion_coco_all(coco_root, model_family=model_family, **overrides)
 
 
 def ours_weighted_mask(
@@ -74,13 +90,11 @@ def ours_weighted_mask(
     model_family: ModelFamily = "sd15",
     **overrides: object,
 ) -> COCORegionConfig:
-    target_size = (512, 512) if model_family == "sd15" else (1024, 1024)
-    batch_size = 8 if model_family == "sd15" else 2
     config = COCORegionConfig(
         coco_root=Path(coco_root),
         profile="ours_weighted_mask",
         model_family=model_family,
-        target_size=target_size,
+        target_size=_target_size_for_model(model_family),
         seed=42,
         subset_size=None,
         min_objects=2,
@@ -92,17 +106,21 @@ def ours_weighted_mask(
         prompt_template="a {label}",
         caption_policy="first",
         object_policy="largest",
-        batch_size=batch_size,
+        batch_size=_batch_size_for_model(model_family),
     )
     return config.copy_with(**overrides)
 
 
-def ours_overlap_stress(coco_root: PathLike, **overrides: object) -> COCORegionConfig:
+def ours_overlap_stress(
+    coco_root: PathLike,
+    model_family: ModelFamily = "sd15",
+    **overrides: object,
+) -> COCORegionConfig:
     config = COCORegionConfig(
         coco_root=Path(coco_root),
         profile="ours_overlap_stress",
-        model_family="sd15",
-        target_size=(512, 512),
+        model_family=model_family,
+        target_size=_target_size_for_model(model_family),
         seed=42,
         subset_size=None,
         min_objects=2,
@@ -114,6 +132,6 @@ def ours_overlap_stress(coco_root: PathLike, **overrides: object) -> COCORegionC
         prompt_template="a {label}",
         caption_policy="first",
         object_policy="largest",
-        batch_size=8,
+        batch_size=_batch_size_for_model(model_family),
     )
     return config.copy_with(**overrides)

@@ -32,13 +32,13 @@ def _make_config(args: argparse.Namespace) -> COCORegionConfig:
         else:
             raise ValueError(f"Unsupported model_family: {args.model_family}")
     elif args.profile == "multidiffusion_coco_all":
-        config = multidiffusion_coco_all(args.coco_root, **common)
+        config = multidiffusion_coco_all(args.coco_root, model_family=args.model_family, **common)
     elif args.profile == "multidiffusion_coco_1k":
-        config = multidiffusion_coco_1k(args.coco_root, **common)
+        config = multidiffusion_coco_1k(args.coco_root, model_family=args.model_family, **common)
     elif args.profile == "ours_weighted_mask":
         config = ours_weighted_mask(args.coco_root, model_family=args.model_family, **common)
     elif args.profile == "ours_overlap_stress":
-        config = ours_overlap_stress(args.coco_root, **common)
+        config = ours_overlap_stress(args.coco_root, model_family=args.model_family, **common)
     else:
         raise ValueError(f"Unsupported profile: {args.profile}")
 

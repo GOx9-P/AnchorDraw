@@ -116,10 +116,12 @@ class COCORegionConfig:
         profile = self.profile
         if profile == "semanticdraw":
             profile = f"semanticdraw_{self.model_family}"
+        elif profile == "multidiffusion_coco_all" and self.model_family != "sd15":
+            profile = f"multidiffusion_coco_all_{self.model_family}"
         elif profile == "ours_weighted_mask":
             profile = f"ours_weighted_mask_{self.model_family}"
         elif profile == "ours_overlap_stress":
-            profile = f"overlap_stress_{self.model_family}"
+            profile = f"ours_overlap_stress_{self.model_family}"
 
         uses_seeded_selection = (
             self.subset_size is not None or
