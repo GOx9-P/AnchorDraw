@@ -5,23 +5,22 @@ AnchorDraw/
 |-- .gitignore                                           # Quy tắc bỏ qua cache, dataset lớn, checkpoint, output thí nghiệm và file tạm.
 |-- README.md                                            # Cây thư mục của repository và ý nghĩa ngắn của từng file/folder.
 |-- Baseline/                                            # Chứa source code baseline gốc dùng để kế thừa và đối chiếu.
-|   `-- semantic-draw-main/                              # Folder wrapper của project SemanticDraw gốc.
-|       `-- semantic-draw-main/                          # Source chính của SemanticDraw baseline.
-|           |-- assets/                                  # Tài nguyên minh họa/demo đi kèm baseline.
-|           |-- demo/                                    # Script hoặc notebook demo của baseline.
-|           |-- notebooks/                               # Notebook thử nghiệm/phân tích của baseline.
-|           |-- src/                                     # Source code lõi của baseline SemanticDraw.
-|           |   |-- model/                               # Pipeline/model SemanticDraw và các module generation chính.
-|           |   |-- data.py                              # Helper data/input của baseline.
-|           |   |-- ipython_util.py                      # Tiện ích chạy trong môi trường notebook/IPython.
-|           |   |-- prompt_util.py                       # Tiện ích xử lý prompt trong baseline.
-|           |   |-- util.py                              # Hàm tiện ích chung của baseline.
-|           |   `-- __init__.py                          # Khai báo package Python cho `src`.
-|           |-- .gitignore                               # Quy tắc ignore riêng của baseline gốc.
-|           |-- LICENSE                                  # License của baseline SemanticDraw.
-|           |-- README.md                                # Hướng dẫn chính của baseline SemanticDraw.
-|           |-- README_old.md                            # README cũ/phiên bản lưu trữ của baseline.
-|           `-- requirement.txt                          # Danh sách thư viện của baseline gốc.
+|   `-- semantic-draw-main/                              # Source chính của project SemanticDraw gốc.
+|       |-- assets/                                      # Tài nguyên minh họa/demo đi kèm baseline.
+|       |-- demo/                                        # Script hoặc notebook demo của baseline.
+|       |-- notebooks/                                   # Notebook thử nghiệm/phân tích của baseline.
+|       |-- src/                                         # Source code lõi của baseline SemanticDraw.
+|       |   |-- model/                                   # Pipeline/model SemanticDraw và các module generation chính.
+|       |   |-- data.py                                  # Helper data/input của baseline.
+|       |   |-- ipython_util.py                          # Tiện ích chạy trong môi trường notebook/IPython.
+|       |   |-- prompt_util.py                           # Tiện ích xử lý prompt trong baseline.
+|       |   |-- util.py                                  # Hàm tiện ích chung của baseline.
+|       |   `-- __init__.py                              # Khai báo package Python cho `src`.
+|       |-- .gitignore                                   # Quy tắc ignore riêng của baseline gốc.
+|       |-- LICENSE                                      # License của baseline SemanticDraw.
+|       |-- README.md                                    # Hướng dẫn chính của baseline SemanticDraw.
+|       |-- README_old.md                                # README cũ/phiên bản lưu trữ của baseline.
+|       `-- requirement.txt                              # Danh sách thư viện của baseline gốc.
 `-- Ours/                                                # Phần đề xuất, tài liệu và code mới của AnchorDraw.
     |-- data_manifests/                                  # Ba manifest chính cho input COCO benchmark theo model family.
     |   |-- README.md                                    # Index ba manifest chính và protocol dùng chung.
@@ -32,6 +31,9 @@ AnchorDraw/
     |   |-- Plan_SemanticAnchor.pdf                      # Bản plan/proposal dạng PDF cho hướng SemanticAnchor.
     |   |-- Proposal.pdf                                 # Proposal nghiên cứu chính.
     |   `-- proposal.txt                                 # Proposal dạng text để đọc/search nhanh.
+    |-- kaggle_semanticdraw_smoke/                       # Notebook Kaggle chạy thử end-to-end SemanticDraw SD1.5 + LCM.
+    |   |-- README.md                                    # Mô tả notebook, output và các file/folder liên quan.
+    |   `-- semanticdraw_sd15_smoke_kaggle.ipynb          # Notebook mặc định chạy mini32, có thể đổi về smoke8.
     |-- src/                                             # Source code xây dựng cho phần thí nghiệm.
     |   `-- data/                                        # Package dataloader COCO cho SemanticDraw/AnchorDraw.
     |       |-- README.md                                 # Giải thích riêng từng file trong package dataloader.
