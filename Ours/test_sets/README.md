@@ -8,22 +8,28 @@ Các subset này dùng để validate hệ thống trước khi benchmark full `
 
 ```text
 test_sets/
-|-- README.md                                                     # Giải thích smoke/mini32 và cách dùng.
+|-- README.md                                                     # Giải thích smoke/mini32/mini128 và cách dùng.
 |-- manifests/                                                    # Subset manifest dùng trực tiếp bởi dataloader.
 |   |-- smoke/                                                    # Test cực nhanh, đúng 1 batch theo config mặc định.
 |   |   |-- coco_val2017_multidiffusion_coco_all_512x512_smoke_bs8.jsonl      # SD1.5, 8 sample.
 |   |   |-- coco_val2017_multidiffusion_coco_all_sdxl_1024x1024_smoke_bs2.jsonl # SDXL, 2 sample.
 |   |   `-- coco_val2017_multidiffusion_coco_all_sd3_1024x1024_smoke_bs2.jsonl  # SD3, 2 sample.
-|   `-- mini32/                                                   # Test dài hơn smoke, dùng để check loop/save/memory.
-|       |-- coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl          # SD1.5, 32 sample.
-|       |-- coco_val2017_multidiffusion_coco_all_sdxl_1024x1024_mini32.jsonl   # SDXL, 32 sample.
-|       `-- coco_val2017_multidiffusion_coco_all_sd3_1024x1024_mini32.jsonl    # SD3, 32 sample.
+|   |-- mini32/                                                   # Test dài hơn smoke, dùng để check loop/save/memory.
+|   |   |-- coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl          # SD1.5, 32 sample.
+|   |   |-- coco_val2017_multidiffusion_coco_all_sdxl_1024x1024_mini32.jsonl   # SDXL, 32 sample.
+|   |   `-- coco_val2017_multidiffusion_coco_all_sd3_1024x1024_mini32.jsonl    # SD3, 32 sample.
+|   `-- mini128/                                                  # Test trung bình, dùng để sanity-check metric ổn hơn mini32.
+|       |-- coco_val2017_multidiffusion_coco_all_512x512_mini128.jsonl         # SD1.5, 128 sample, 16 batch với batch_size=8.
+|       |-- coco_val2017_multidiffusion_coco_all_sdxl_1024x1024_mini128.jsonl  # SDXL, 128 sample.
+|       `-- coco_val2017_multidiffusion_coco_all_sd3_1024x1024_mini128.jsonl   # SD3, 128 sample.
 |-- reports/                                                      # Summary JSON cho từng subset manifest.
 |   |-- smoke/                                                    # Report cho smoke manifests.
-|   `-- mini32/                                                   # Report cho mini32 manifests.
+|   |-- mini32/                                                   # Report cho mini32 manifests.
+|   `-- mini128/                                                  # Report cho mini128 manifests.
 `-- previews/                                                     # Overlay ảnh COCO + mask, sinh local nếu môi trường có đủ torch/pycocotools.
     |-- smoke/                                                    # Preview smoke theo model family.
-    `-- mini32/                                                   # Preview mini32 theo model family.
+    |-- mini32/                                                   # Preview mini32 theo model family.
+    `-- mini128/                                                  # Preview mini128 theo model family nếu môi trường có đủ dependency.
 ```
 
 ## Loại test set
@@ -34,6 +40,8 @@ test_sets/
 | `smoke` SDXL | `2` | Đúng 1 batch với `batch_size=2`, dùng để kiểm tra pipeline high-res SDXL. |
 | `smoke` SD3 | `2` | Đúng 1 batch với `batch_size=2`, dùng để kiểm tra pipeline high-res SD3. |
 | `mini32` | `32` | Test dài hơn smoke để kiểm tra loop, save output, logging, và lỗi memory theo thời gian. |
+| `mini128` SD1.5 | `128` | Test trung bình cho Kaggle SD1.5 + LCM; 16 dataloader batch với `batch_size=8`, dùng để sanity-check metric ổn hơn mini32. |
+| `mini128` SDXL/SD3 | `128` | Subset cùng sample với SD1.5 nhưng target size 1024x1024; chủ yếu để chuẩn bị nếu cần test high-res. |
 
 ## Cách chọn sample
 
@@ -59,6 +67,12 @@ Mini32:
 
 ```text
 32 sample = 16 ảnh có 2 object + 10 ảnh có 3 object + 6 ảnh có 4 object
+```
+
+Mini128:
+
+```text
+128 sample = 86 ảnh có 2 object + 31 ảnh có 3 object + 11 ảnh có 4 object
 ```
 
 Lý do chọn như vậy:

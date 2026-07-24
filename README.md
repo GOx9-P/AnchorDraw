@@ -33,14 +33,14 @@ AnchorDraw/
     |   `-- proposal.txt                                 # Proposal dạng text để đọc/search nhanh.
     |-- kaggle_semanticdraw_smoke/                       # Notebook Kaggle chạy SemanticDraw SD1.5 + LCM và đo metric sanity check.
     |   |-- README.md                                    # Mô tả notebook, output và các file/folder liên quan.
-    |   `-- semanticdraw_sd15_smoke_kaggle.ipynb          # Notebook mặc định chạy mini32, sinh ảnh rồi đo FID/IS/CLIP/Time.
+    |   `-- semanticdraw_sd15_smoke_kaggle.ipynb          # Notebook mặc định chạy mini128, sinh ảnh rồi đo FID/IS/CLIP/Time.
     |-- src/                                             # Source code xây dựng cho phần thí nghiệm.
     |   |-- data/                                        # Package dataloader COCO cho SemanticDraw/AnchorDraw.
     |   |   |-- README.md                                 # Giải thích riêng từng file trong package dataloader.
     |   |   |-- __init__.py                               # Export API package `data`.
     |   |   |-- adapters.py                               # Chuyển batch dataloader sang input gọn cho SemanticDraw.
     |   |   |-- build_manifest.py                         # CLI build manifest COCO từ annotations gốc.
-    |   |   |-- build_test_sets.py                        # CLI build smoke/mini32 subset từ full manifest chính.
+    |   |   |-- build_test_sets.py                        # CLI build smoke/mini32/mini128 subset từ full manifest chính.
     |   |   |-- coco_mask_utils.py                        # Decode segmentation, resize mask, chuyển mask sang tensor.
     |   |   |-- coco_profiles.py                          # Preset/profile thí nghiệm như `multidiffusion_coco_all`.
     |   |   |-- coco_region_collate.py                    # Collate batch có số region khác nhau bằng padding.
@@ -62,8 +62,8 @@ AnchorDraw/
     |       |-- io.py                                     # Đọc summary, tìm ảnh generate theo sample_id.
     |       |-- reporting.py                              # Xuất report JSON/CSV.
     |       `-- time_metrics.py                          # Tổng hợp Time(s) từ generation summary.
-    |-- test_sets/                                      # Smoke và mini32 manifest để validate hệ thống trước benchmark full.
-    |   |-- README.md                                    # Giải thích cách dùng smoke/mini32.
+    |-- test_sets/                                      # Smoke, mini32 và mini128 manifest để validate trước benchmark full.
+    |   |-- README.md                                    # Giải thích cách dùng smoke/mini32/mini128.
     |   |-- manifests/                                  # Subset manifest dùng trực tiếp bởi dataloader.
     |   |-- reports/                                    # Summary JSON của từng subset manifest.
     |   `-- previews/                                   # Overlay ảnh COCO + mask, sinh local nếu đủ dependency.

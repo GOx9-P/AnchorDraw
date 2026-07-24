@@ -56,10 +56,10 @@ Thống kê thời gian generate từ `generation_summary.json`: mean, std, tota
 manifest JSONL
 ```
 
-Ví dụ mini32 SD1.5:
+Ví dụ mini128 SD1.5:
 
 ```text
-Ours/test_sets/manifests/mini32/coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl
+Ours/test_sets/manifests/mini128/coco_val2017_multidiffusion_coco_all_512x512_mini128.jsonl
 ```
 
 ```text
@@ -83,7 +83,7 @@ generated output dir
 Folder chứa ảnh sinh ra từ notebook/runner:
 
 ```text
-semanticdraw_mini32_outputs/
+semanticdraw_mini128_outputs/
 |-- *_generated.png
 |-- *_overlay.png
 `-- generation_summary.json
@@ -91,16 +91,16 @@ semanticdraw_mini32_outputs/
 
 ## Cách chạy trên Kaggle
 
-Sau khi notebook generation đã sinh xong ảnh mini32:
+Sau khi notebook generation đã sinh xong ảnh mini128:
 
 ```bash
 export PYTHONPATH=/kaggle/working/AnchorDraw/Ours/src
 
 python -m metrics.evaluate_metrics \
-  --manifest-path /kaggle/working/AnchorDraw/Ours/test_sets/manifests/mini32/coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl \
+  --manifest-path /kaggle/working/AnchorDraw/Ours/test_sets/manifests/mini128/coco_val2017_multidiffusion_coco_all_512x512_mini128.jsonl \
   --coco-root /kaggle/working/COCO \
-  --generated-dir /kaggle/working/semanticdraw_mini32_outputs \
-  --output-dir /kaggle/working/semanticdraw_mini32_metrics \
+  --generated-dir /kaggle/working/semanticdraw_mini128_outputs \
+  --output-dir /kaggle/working/semanticdraw_mini128_metrics \
   --model-family sd15 \
   --metrics fid,is,clip_fg,clip_pg,time \
   --is-splits 10
@@ -114,10 +114,10 @@ Từ root repo `AnchorDraw/`:
 $env:PYTHONPATH="Ours\src"
 
 python -m metrics.evaluate_metrics `
-  --manifest-path Ours\test_sets\manifests\mini32\coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl `
+  --manifest-path Ours\test_sets\manifests\mini128\coco_val2017_multidiffusion_coco_all_512x512_mini128.jsonl `
   --coco-root D:\datasets\COCO `
-  --generated-dir D:\outputs\semanticdraw_mini32_outputs `
-  --output-dir Ours\eval_outputs\semanticdraw_sd15_lcm_mini32 `
+  --generated-dir D:\outputs\semanticdraw_mini128_outputs `
+  --output-dir Ours\eval_outputs\semanticdraw_sd15_lcm_mini128 `
   --model-family sd15 `
   --metrics fid,is,clip_fg,clip_pg,time `
   --is-splits 10
@@ -138,7 +138,7 @@ Ours/eval_outputs/.../
 - FID và IS cần `torchmetrics` + `torch-fidelity`.
 - CLIP metrics cần `open-clip-torch`.
 - Lần đầu chạy FID/IS/CLIP có thể cần Internet để tải weight.
-- Smoke/mini32 chỉ dùng để kiểm tra pipeline metric có chạy đúng; kết quả báo cáo chính thức nên đo trên full manifest 1073 sample.
+- Smoke/mini32/mini128 chỉ dùng để kiểm tra pipeline metric có chạy đúng; kết quả báo cáo chính thức nên đo trên full manifest 1073 sample.
 - `--is-splits` sẽ tự được giới hạn không vượt quá số ảnh evaluate, nên smoke8 không bị lỗi vì split lớn hơn số sample.
 - `BATCH_SIZE` trong dataloader không có nghĩa là generation batch size; ở đây nó chỉ quyết định số sample được load mỗi lượt khi đo metric.
 - Để so sánh công bằng, mọi method/sampler phải dùng cùng manifest và cùng tập ảnh generate tương ứng.

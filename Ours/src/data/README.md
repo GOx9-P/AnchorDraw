@@ -76,7 +76,7 @@ coco_region_dataset.py = nơi biến manifest + COCO gốc thành PyTorch sample
 | `coco_region_config.py` | Rất chính | Định nghĩa `COCORegionConfig`, nơi chứa toàn bộ tham số data loading và sampling. |
 | `coco_region_sampler.py` | Chính khi build manifest | Filter COCO, chọn ảnh/object/caption hợp lệ, tạo record manifest. |
 | `build_manifest.py` | Chính khi build manifest | CLI để chạy build manifest từ terminal. |
-| `build_test_sets.py` | Chính khi build smoke/mini | CLI trích `smoke` và `mini32` từ full manifest chính, kèm summary report và preview optional. |
+| `build_test_sets.py` | Chính khi build smoke/mini32/mini128 | CLI trích `smoke`, `mini32` và `mini128` từ full manifest chính, kèm summary report và preview optional. |
 | `coco_region_manifest.py` | Hỗ trợ bắt buộc | Load COCO JSON, tạo index tra cứu `image_id`, `annotation_id`, `category_id`, `caption`. |
 | `coco_mask_utils.py` | Hỗ trợ bắt buộc | Decode COCO segmentation thành binary mask, resize mask, chuyển mask sang tensor, rescale bbox. |
 | `coco_region_collate.py` | Hỗ trợ bắt buộc khi batch | Gom nhiều sample có số object khác nhau thành batch bằng padding và `valid_regions`. |
@@ -326,6 +326,7 @@ Nó tạo:
 ```text
 Ours/test_sets/manifests/smoke/
 Ours/test_sets/manifests/mini32/
+Ours/test_sets/manifests/mini128/
 Ours/test_sets/reports/
 Ours/test_sets/previews/
 ```
@@ -335,6 +336,7 @@ Mục đích:
 ```text
 smoke  = đúng 1 batch để test hệ thống không crash
 mini32 = 32 sample để test loop/save/logging trước benchmark full
+mini128 = 128 sample để sanity-check metric ổn hơn mini32 trên Kaggle
 ```
 
 Lệnh mẫu:
@@ -578,14 +580,14 @@ Nó cũng dùng lazy import cho một số object nặng để tránh import `to
 | Thêm profile thí nghiệm mới | `coco_profiles.py` |
 | Đổi logic filter ảnh/object | `coco_region_sampler.py` |
 | Đổi schema manifest | `coco_region_sampler.py`, `coco_region_manifest.py`, có thể cả `coco_region_dataset.py` |
-| Build smoke/mini32 test set | `build_test_sets.py` |
+| Build smoke/mini32/mini128 test set | `build_test_sets.py` |
 | Đổi cách decode/resize mask | `coco_mask_utils.py` |
 | Đổi output sample của dataset | `coco_region_dataset.py` |
 | Đổi cách batch padding | `coco_region_collate.py` |
 | Đổi format input đưa sang SemanticDraw | `adapters.py` |
 | Thêm debug visualization | `visualize.py` |
 | Thêm CLI build data | `build_manifest.py` |
-| Thêm CLI build smoke/mini32 | `build_test_sets.py` |
+| Thêm CLI build smoke/mini32/mini128 | `build_test_sets.py` |
 
 ## 8. Tóm tắt cực ngắn
 
@@ -600,7 +602,7 @@ coco_region_sampler.py
   Build manifest từ COCO gốc.
 
 build_test_sets.py
-  Trích smoke/mini32 từ full manifest.
+  Trích smoke/mini32/mini128 từ full manifest.
 
 coco_region_dataset.py
   File chính chạy dataloader.

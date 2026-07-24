@@ -1,18 +1,18 @@
-# Kaggle SemanticDraw Mini32 Test
+# Kaggle SemanticDraw Mini128 Test
 
 Thư mục này chứa notebook chạy thử end-to-end baseline SemanticDraw trên Kaggle, sau đó đo metric sanity check ngay trong notebook. Mặc định notebook chạy cấu hình:
 
 ```text
 model   = Stable Diffusion 1.5
 sampler = LCM
-input   = mini32 manifest, 32 sample, 512x512
+input   = mini128 manifest, 128 sample, 512x512
 metric  = FID, IS, CLIP(fg), CLIP(pg), Time(s)
 ```
 
 Manifest mặc định:
 
 ```text
-Ours/test_sets/manifests/mini32/coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl
+Ours/test_sets/manifests/mini128/coco_val2017_multidiffusion_coco_all_512x512_mini128.jsonl
 ```
 
 Notebook này chưa dùng để benchmark chính thức. Mục tiêu là kiểm tra toàn bộ đường chạy:
@@ -32,7 +32,7 @@ GitHub repo
 ```text
 kaggle_semanticdraw_smoke/
 |-- README.md                                   # File này: giải thích notebook và các file/folder liên quan.
-`-- semanticdraw_sd15_smoke_kaggle.ipynb         # Notebook Kaggle chạy SemanticDraw SD1.5 + LCM, mặc định mini32.
+`-- semanticdraw_sd15_smoke_kaggle.ipynb         # Notebook Kaggle chạy SemanticDraw SD1.5 + LCM, mặc định mini128.
 ```
 
 ## File/folder notebook đọc từ repo
@@ -40,11 +40,11 @@ kaggle_semanticdraw_smoke/
 Notebook không tự sửa các file dưới đây, nhưng có đọc/import chúng khi chạy:
 
 ```text
-Ours/test_sets/manifests/mini32/
-`-- coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl
+Ours/test_sets/manifests/mini128/
+`-- coco_val2017_multidiffusion_coco_all_512x512_mini128.jsonl
 ```
 
-Manifest mini32 cung cấp 32 record input COCO cho test.
+Manifest mini128 cung cấp 128 record input COCO cho test.
 
 ```text
 Ours/src/data/
@@ -90,28 +90,37 @@ COCO val2017 images và annotations nếu runtime chưa có sẵn.
 Cache mask đã resize để giảm chi phí decode/resize lại.
 
 ```text
-/kaggle/working/semanticdraw_mini32_outputs/
+/kaggle/working/semanticdraw_mini128_outputs/
 |-- *_generated.png
 |-- *_overlay.png
 `-- generation_summary.json
 ```
 
-Ảnh sinh ra, overlay mask và summary JSON của lần chạy mini32.
+Ảnh sinh ra, overlay mask và summary JSON của lần chạy mini128.
 
 ```text
-/kaggle/working/semanticdraw_mini32_metrics/
-|-- semanticdraw_sd15_lcm_mini32_metrics.json
-`-- semanticdraw_sd15_lcm_mini32_metrics.csv
+/kaggle/working/semanticdraw_mini128_metrics/
+|-- semanticdraw_sd15_lcm_mini128_metrics.json
+`-- semanticdraw_sd15_lcm_mini128_metrics.csv
 ```
 
 Report metric sau khi notebook chạy xong.
 
-## Ghi chú đổi về smoke8
+## Ghi chú đổi về mini32 hoặc smoke8
 
-Nếu muốn chạy test ngắn hơn, đổi trong cell cấu hình:
+Nếu muốn chạy mini32, đổi trong cell cấu hình:
 
 ```python
-SMOKE_MANIFEST = REPO_ROOT / "Ours" / "test_sets" / "manifests" / "smoke" / "coco_val2017_multidiffusion_coco_all_512x512_smoke_bs8.jsonl"
+RUN_MANIFEST = REPO_ROOT / "Ours" / "test_sets" / "manifests" / "mini32" / "coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl"
+OUTPUT_DIR = Path("/kaggle/working/semanticdraw_mini32_outputs")
+METRICS_OUTPUT_DIR = Path("/kaggle/working/semanticdraw_mini32_metrics")
+METRICS_REPORT_PREFIX = "semanticdraw_sd15_lcm_mini32_metrics"
+```
+
+Nếu muốn chạy test ngắn hơn nữa, đổi sang smoke8:
+
+```python
+RUN_MANIFEST = REPO_ROOT / "Ours" / "test_sets" / "manifests" / "smoke" / "coco_val2017_multidiffusion_coco_all_512x512_smoke_bs8.jsonl"
 OUTPUT_DIR = Path("/kaggle/working/semanticdraw_smoke_outputs")
 METRICS_OUTPUT_DIR = Path("/kaggle/working/semanticdraw_smoke_metrics")
 METRICS_REPORT_PREFIX = "semanticdraw_sd15_lcm_smoke_metrics"

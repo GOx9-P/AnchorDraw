@@ -16,25 +16,31 @@ MAIN_MANIFESTS = {
         "source": "coco_val2017_multidiffusion_coco_all_512x512_all.jsonl",
         "smoke": "coco_val2017_multidiffusion_coco_all_512x512_smoke_bs8.jsonl",
         "mini": "coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl",
+        "mini128": "coco_val2017_multidiffusion_coco_all_512x512_mini128.jsonl",
         "batch_size": 8,
         "smoke_counts": {2: 3, 3: 3, 4: 2},
         "mini_counts": {2: 16, 3: 10, 4: 6},
+        "mini128_counts": {2: 86, 3: 31, 4: 11},
     },
     "sdxl_1024": {
         "source": "coco_val2017_multidiffusion_coco_all_sdxl_1024x1024_all.jsonl",
         "smoke": "coco_val2017_multidiffusion_coco_all_sdxl_1024x1024_smoke_bs2.jsonl",
         "mini": "coco_val2017_multidiffusion_coco_all_sdxl_1024x1024_mini32.jsonl",
+        "mini128": "coco_val2017_multidiffusion_coco_all_sdxl_1024x1024_mini128.jsonl",
         "batch_size": 2,
         "smoke_counts": {2: 1, 4: 1},
         "mini_counts": {2: 16, 3: 10, 4: 6},
+        "mini128_counts": {2: 86, 3: 31, 4: 11},
     },
     "sd3_1024": {
         "source": "coco_val2017_multidiffusion_coco_all_sd3_1024x1024_all.jsonl",
         "smoke": "coco_val2017_multidiffusion_coco_all_sd3_1024x1024_smoke_bs2.jsonl",
         "mini": "coco_val2017_multidiffusion_coco_all_sd3_1024x1024_mini32.jsonl",
+        "mini128": "coco_val2017_multidiffusion_coco_all_sd3_1024x1024_mini128.jsonl",
         "batch_size": 2,
         "smoke_counts": {2: 1, 4: 1},
         "mini_counts": {2: 16, 3: 10, 4: 6},
+        "mini128_counts": {2: 86, 3: 31, 4: 11},
     },
 }
 
@@ -235,6 +241,7 @@ def build_test_sets(args: argparse.Namespace) -> None:
         for subset_name, manifest_name, counts in [
             ("smoke", str(spec["smoke"]), spec["smoke_counts"]),
             ("mini32", str(spec["mini"]), spec["mini_counts"]),
+            ("mini128", str(spec["mini128"]), spec["mini128_counts"]),
         ]:
             subset = select_subset(records, counts)  # type: ignore[arg-type]
             subset_manifest = output_dir / "manifests" / subset_name / manifest_name
@@ -277,7 +284,7 @@ def build_test_sets(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build deterministic smoke/mini test sets from full COCO manifests.")
+    parser = argparse.ArgumentParser(description="Build deterministic smoke/mini32/mini128 test sets from full COCO manifests.")
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     parser.add_argument("--manifest-dir", type=Path, default=Path("Ours") / "data_manifests")
     parser.add_argument("--output-dir", type=Path, default=Path("Ours") / "test_sets")

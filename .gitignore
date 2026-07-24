@@ -1,5 +1,6 @@
 # Python caches
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
@@ -78,7 +79,10 @@ generations/
 eval_outputs/
 metrics/
 !Ours/src/metrics/
-!Ours/src/metrics/**
+!Ours/src/metrics/*.py
+!Ours/src/metrics/*.md
+Ours/src/metrics/__pycache__/
+Ours/src/metrics/**/*.py[cod]
 previews/
 
 # Local caches
