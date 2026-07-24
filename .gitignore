@@ -77,6 +77,8 @@ generated/
 generations/
 eval_outputs/
 metrics/
+!Ours/src/metrics/
+!Ours/src/metrics/**
 previews/
 
 # Local caches

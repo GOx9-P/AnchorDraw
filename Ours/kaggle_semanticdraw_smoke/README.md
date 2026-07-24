@@ -1,11 +1,12 @@
 # Kaggle SemanticDraw Mini32 Test
 
-Thư mục này chứa notebook chạy thử end-to-end baseline SemanticDraw trên Kaggle. Mặc định notebook chạy cấu hình:
+Thư mục này chứa notebook chạy thử end-to-end baseline SemanticDraw trên Kaggle, sau đó đo metric sanity check ngay trong notebook. Mặc định notebook chạy cấu hình:
 
 ```text
 model   = Stable Diffusion 1.5
 sampler = LCM
 input   = mini32 manifest, 32 sample, 512x512
+metric  = FID, IS, CLIP(fg), CLIP(pg), Time(s)
 ```
 
 Manifest mặc định:
@@ -14,7 +15,7 @@ Manifest mặc định:
 Ours/test_sets/manifests/mini32/coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl
 ```
 
-Notebook này chưa dùng để benchmark metric. Mục tiêu là kiểm tra toàn bộ đường chạy:
+Notebook này chưa dùng để benchmark chính thức. Mục tiêu là kiểm tra toàn bộ đường chạy:
 
 ```text
 GitHub repo
@@ -23,6 +24,7 @@ GitHub repo
 -> prompt/mask input đúng format SemanticDraw
 -> baseline SemanticDrawPipeline SD1.5 + LCM
 -> generated images + overlay preview
+-> metrics JSON/CSV
 ```
 
 ## Cây thư mục
@@ -59,6 +61,12 @@ Ours/src/data/
 Package data loader tạo batch, mask tensor, metadata và overlay preview cho notebook.
 
 ```text
+Ours/src/metrics/
+```
+
+Package metric đo FID, IS, CLIP(fg), CLIP(pg) và Time(s) từ ảnh đã sinh.
+
+```text
 Baseline/semantic-draw-main/src/model/pipeline_semantic_draw.py
 Baseline/semantic-draw-main/src/model/semantic_draw.py
 ```
@@ -90,6 +98,14 @@ Cache mask đã resize để giảm chi phí decode/resize lại.
 
 Ảnh sinh ra, overlay mask và summary JSON của lần chạy mini32.
 
+```text
+/kaggle/working/semanticdraw_mini32_metrics/
+|-- semanticdraw_sd15_lcm_mini32_metrics.json
+`-- semanticdraw_sd15_lcm_mini32_metrics.csv
+```
+
+Report metric sau khi notebook chạy xong.
+
 ## Ghi chú đổi về smoke8
 
 Nếu muốn chạy test ngắn hơn, đổi trong cell cấu hình:
@@ -97,6 +113,8 @@ Nếu muốn chạy test ngắn hơn, đổi trong cell cấu hình:
 ```python
 SMOKE_MANIFEST = REPO_ROOT / "Ours" / "test_sets" / "manifests" / "smoke" / "coco_val2017_multidiffusion_coco_all_512x512_smoke_bs8.jsonl"
 OUTPUT_DIR = Path("/kaggle/working/semanticdraw_smoke_outputs")
+METRICS_OUTPUT_DIR = Path("/kaggle/working/semanticdraw_smoke_metrics")
+METRICS_REPORT_PREFIX = "semanticdraw_sd15_lcm_smoke_metrics"
 ```
 
 `BATCH_SIZE = 8` chỉ là số sample mỗi batch của dataloader. Tổng số ảnh được sinh bằng số record trong manifest.

@@ -1,0 +1,144 @@
+# Metrics Evaluation
+
+Package này dùng để đo metric cho ảnh đã sinh bởi SemanticDraw/AnchorDraw. Nó không chạy generation; nó chỉ đọc output đã có, đối chiếu với manifest COCO, rồi xuất report JSON/CSV.
+
+## Cây thư mục
+
+```text
+metrics/
+|-- README.md              # Giải thích mục đích, input/output và cách chạy.
+|-- __init__.py            # Export API chính của package.
+|-- config.py              # Dataclass cấu hình evaluation.
+|-- io.py                  # Đọc manifest/summary và tìm path ảnh đã generate.
+|-- image_ops.py           # Resize ảnh, chuyển tensor, crop foreground bằng mask.
+|-- time_metrics.py        # Tính Time(s) từ generation summary.
+|-- clip_metrics.py        # Tính CLIP(pg) và CLIP(fg) bằng open_clip.
+|-- inception_metrics.py   # Tính FID và Inception Score bằng torchmetrics.
+|-- reporting.py           # Ghi report JSON/CSV.
+`-- evaluate_metrics.py    # CLI chạy toàn bộ evaluation.
+```
+
+## Metric được hỗ trợ
+
+```text
+FID
+```
+
+So sánh phân phối ảnh generate với ảnh COCO gốc đã resize về cùng target size. Metric này càng thấp càng tốt.
+
+```text
+IS
+```
+
+Inception Score trên ảnh generate. Metric này càng cao càng tốt.
+
+```text
+CLIP(pg)
+```
+
+Độ tương đồng CLIP giữa toàn bộ ảnh generate và background/global caption của COCO. Trong report lưu cả `clip_pg` dạng cosine và `clip_pg_x100`.
+
+```text
+CLIP(fg)
+```
+
+Độ tương đồng CLIP giữa từng foreground region generate và foreground prompt tương ứng. Region được crop theo COCO mask đã resize; mặc định vùng ngoài mask được tô trắng để giảm nhiễu background. Trong report lưu cả `clip_fg` dạng cosine và `clip_fg_x100`.
+
+```text
+Time(s)
+```
+
+Thống kê thời gian generate từ `generation_summary.json`: mean, std, total, min, max.
+
+## Input cần có
+
+```text
+manifest JSONL
+```
+
+Ví dụ mini32 SD1.5:
+
+```text
+Ours/test_sets/manifests/mini32/coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl
+```
+
+```text
+COCO root
+```
+
+Folder phải chứa:
+
+```text
+COCO/
+|-- val2017/
+`-- annotations/
+    |-- instances_val2017.json
+    `-- captions_val2017.json
+```
+
+```text
+generated output dir
+```
+
+Folder chứa ảnh sinh ra từ notebook/runner:
+
+```text
+semanticdraw_mini32_outputs/
+|-- *_generated.png
+|-- *_overlay.png
+`-- generation_summary.json
+```
+
+## Cách chạy trên Kaggle
+
+Sau khi notebook generation đã sinh xong ảnh mini32:
+
+```bash
+export PYTHONPATH=/kaggle/working/AnchorDraw/Ours/src
+
+python -m metrics.evaluate_metrics \
+  --manifest-path /kaggle/working/AnchorDraw/Ours/test_sets/manifests/mini32/coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl \
+  --coco-root /kaggle/working/COCO \
+  --generated-dir /kaggle/working/semanticdraw_mini32_outputs \
+  --output-dir /kaggle/working/semanticdraw_mini32_metrics \
+  --model-family sd15 \
+  --metrics fid,is,clip_fg,clip_pg,time \
+  --is-splits 10
+```
+
+## Cách chạy local trên Windows
+
+Từ root repo `AnchorDraw/`:
+
+```powershell
+$env:PYTHONPATH="Ours\src"
+
+python -m metrics.evaluate_metrics `
+  --manifest-path Ours\test_sets\manifests\mini32\coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl `
+  --coco-root D:\datasets\COCO `
+  --generated-dir D:\outputs\semanticdraw_mini32_outputs `
+  --output-dir Ours\eval_outputs\semanticdraw_sd15_lcm_mini32 `
+  --model-family sd15 `
+  --metrics fid,is,clip_fg,clip_pg,time `
+  --is-splits 10
+```
+
+## Output
+
+```text
+Ours/eval_outputs/.../
+|-- metrics.json
+`-- metrics.csv
+```
+
+`metrics.json` giữ đầy đủ metadata, danh sách sample đã evaluate và các sample bị thiếu ảnh generate nếu có. `metrics.csv` là một dòng phẳng để copy nhanh vào bảng thí nghiệm.
+
+## Ghi chú quan trọng
+
+- FID và IS cần `torchmetrics` + `torch-fidelity`.
+- CLIP metrics cần `open-clip-torch`.
+- Lần đầu chạy FID/IS/CLIP có thể cần Internet để tải weight.
+- Smoke/mini32 chỉ dùng để kiểm tra pipeline metric có chạy đúng; kết quả báo cáo chính thức nên đo trên full manifest 1073 sample.
+- `--is-splits` sẽ tự được giới hạn không vượt quá số ảnh evaluate, nên smoke8 không bị lỗi vì split lớn hơn số sample.
+- `BATCH_SIZE` trong dataloader không có nghĩa là generation batch size; ở đây nó chỉ quyết định số sample được load mỗi lượt khi đo metric.
+- Để so sánh công bằng, mọi method/sampler phải dùng cùng manifest và cùng tập ảnh generate tương ứng.

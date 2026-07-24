@@ -31,25 +31,37 @@ AnchorDraw/
     |   |-- Plan_SemanticAnchor.pdf                      # Bản plan/proposal dạng PDF cho hướng SemanticAnchor.
     |   |-- Proposal.pdf                                 # Proposal nghiên cứu chính.
     |   `-- proposal.txt                                 # Proposal dạng text để đọc/search nhanh.
-    |-- kaggle_semanticdraw_smoke/                       # Notebook Kaggle chạy thử end-to-end SemanticDraw SD1.5 + LCM.
+    |-- kaggle_semanticdraw_smoke/                       # Notebook Kaggle chạy SemanticDraw SD1.5 + LCM và đo metric sanity check.
     |   |-- README.md                                    # Mô tả notebook, output và các file/folder liên quan.
-    |   `-- semanticdraw_sd15_smoke_kaggle.ipynb          # Notebook mặc định chạy mini32, có thể đổi về smoke8.
+    |   `-- semanticdraw_sd15_smoke_kaggle.ipynb          # Notebook mặc định chạy mini32, sinh ảnh rồi đo FID/IS/CLIP/Time.
     |-- src/                                             # Source code xây dựng cho phần thí nghiệm.
-    |   `-- data/                                        # Package dataloader COCO cho SemanticDraw/AnchorDraw.
-    |       |-- README.md                                 # Giải thích riêng từng file trong package dataloader.
-    |       |-- __init__.py                               # Export API package `data`.
-    |       |-- adapters.py                               # Chuyển batch dataloader sang input gọn cho SemanticDraw.
-    |       |-- build_manifest.py                         # CLI build manifest COCO từ annotations gốc.
-    |       |-- build_test_sets.py                        # CLI build smoke/mini32 subset từ full manifest chính.
-    |       |-- coco_mask_utils.py                        # Decode segmentation, resize mask, chuyển mask sang tensor.
-    |       |-- coco_profiles.py                          # Preset/profile thí nghiệm như `multidiffusion_coco_all`.
-    |       |-- coco_region_collate.py                    # Collate batch có số region khác nhau bằng padding.
-    |       |-- coco_region_config.py                     # Dataclass chứa toàn bộ config dataloader/sampling.
-    |       |-- coco_region_dataset.py                    # File chính chạy PyTorch Dataset/DataLoader.
-    |       |-- coco_region_manifest.py                   # Load manifest và tạo COCO index để trace ID.
-    |       |-- coco_region_sampler.py                    # Filter COCO và tạo record manifest.
-    |       |-- download_coco.py                          # Tiện ích tải COCO nếu cần setup lại data.
-    |       `-- visualize.py                            # Xuất preview/overlay mask để debug data.
+    |   |-- data/                                        # Package dataloader COCO cho SemanticDraw/AnchorDraw.
+    |   |   |-- README.md                                 # Giải thích riêng từng file trong package dataloader.
+    |   |   |-- __init__.py                               # Export API package `data`.
+    |   |   |-- adapters.py                               # Chuyển batch dataloader sang input gọn cho SemanticDraw.
+    |   |   |-- build_manifest.py                         # CLI build manifest COCO từ annotations gốc.
+    |   |   |-- build_test_sets.py                        # CLI build smoke/mini32 subset từ full manifest chính.
+    |   |   |-- coco_mask_utils.py                        # Decode segmentation, resize mask, chuyển mask sang tensor.
+    |   |   |-- coco_profiles.py                          # Preset/profile thí nghiệm như `multidiffusion_coco_all`.
+    |   |   |-- coco_region_collate.py                    # Collate batch có số region khác nhau bằng padding.
+    |   |   |-- coco_region_config.py                     # Dataclass chứa toàn bộ config dataloader/sampling.
+    |   |   |-- coco_region_dataset.py                    # File chính chạy PyTorch Dataset/DataLoader.
+    |   |   |-- coco_region_manifest.py                   # Load manifest và tạo COCO index để trace ID.
+    |   |   |-- coco_region_sampler.py                    # Filter COCO và tạo record manifest.
+    |   |   |-- download_coco.py                          # Tiện ích tải COCO nếu cần setup lại data.
+    |   |   `-- visualize.py                            # Xuất preview/overlay mask để debug data.
+    |   `-- metrics/                                     # Package đo FID, IS, CLIP(fg), CLIP(pg) và Time(s).
+    |       |-- README.md                                 # Giải thích input/output và cách chạy metric.
+    |       |-- __init__.py                               # Export API chính của package `metrics`.
+    |       |-- clip_metrics.py                           # CLIP(pg) toàn ảnh và CLIP(fg) theo mask foreground.
+    |       |-- config.py                                 # Dataclass cấu hình metric evaluation.
+    |       |-- evaluate_metrics.py                       # CLI chạy evaluation từ manifest + generated outputs.
+    |       |-- evaluator.py                              # Orchestrator nối dataloader, ảnh generate và metric accumulators.
+    |       |-- image_ops.py                              # Resize ảnh, tensor uint8, crop foreground theo mask.
+    |       |-- inception_metrics.py                      # FID và Inception Score bằng torchmetrics.
+    |       |-- io.py                                     # Đọc summary, tìm ảnh generate theo sample_id.
+    |       |-- reporting.py                              # Xuất report JSON/CSV.
+    |       `-- time_metrics.py                          # Tổng hợp Time(s) từ generation summary.
     |-- test_sets/                                      # Smoke và mini32 manifest để validate hệ thống trước benchmark full.
     |   |-- README.md                                    # Giải thích cách dùng smoke/mini32.
     |   |-- manifests/                                  # Subset manifest dùng trực tiếp bởi dataloader.
