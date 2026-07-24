@@ -31,9 +31,10 @@ AnchorDraw/
     |   |-- Plan_SemanticAnchor.pdf                      # Bản plan/proposal dạng PDF cho hướng SemanticAnchor.
     |   |-- Proposal.pdf                                 # Proposal nghiên cứu chính.
     |   `-- proposal.txt                                 # Proposal dạng text để đọc/search nhanh.
-    |-- kaggle_semanticdraw_smoke/                       # Notebook Kaggle chạy SemanticDraw SD1.5 + LCM và đo metric sanity check.
+    |-- kaggle_semanticdraw_smoke/                       # Notebook Kaggle chạy SemanticDraw SD1.5 + LCM.
     |   |-- README.md                                    # Mô tả notebook, output và các file/folder liên quan.
-    |   `-- semanticdraw_sd15_smoke_kaggle.ipynb          # Notebook mặc định chạy mini128, sinh ảnh rồi đo FID/IS/CLIP/Time.
+    |   |-- semanticdraw_sd15_smoke_kaggle.ipynb          # Notebook debug nhanh, mặc định chạy mini128 rồi đo FID/IS/CLIP/Time.
+    |   `-- semanticdraw_sd15_lcm_full1073_kaggle.ipynb   # Notebook chạy full manifest 1073 sample để đo metric chính.
     |-- src/                                             # Source code xây dựng cho phần thí nghiệm.
     |   |-- data/                                        # Package dataloader COCO cho SemanticDraw/AnchorDraw.
     |   |   |-- README.md                                 # Giải thích riêng từng file trong package dataloader.

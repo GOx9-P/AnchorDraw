@@ -1,12 +1,28 @@
-# Kaggle SemanticDraw Mini128 Test
+# Kaggle SemanticDraw SD1.5 + LCM
 
-Thư mục này chứa notebook chạy thử end-to-end baseline SemanticDraw trên Kaggle, sau đó đo metric sanity check ngay trong notebook. Mặc định notebook chạy cấu hình:
+Thư mục này chứa notebook chạy baseline SemanticDraw trên Kaggle bằng cấu hình:
 
 ```text
 model   = Stable Diffusion 1.5
 sampler = LCM
-input   = mini128 manifest, 128 sample, 512x512
 metric  = FID, IS, CLIP(fg), CLIP(pg), Time(s)
+```
+
+Có 2 notebook chính:
+
+```text
+kaggle_semanticdraw_smoke/
+|-- README.md                                      # File này: giải thích notebook và các file/folder liên quan.
+|-- semanticdraw_sd15_smoke_kaggle.ipynb            # Notebook debug nhanh, mặc định mini128 gồm 128 sample.
+`-- semanticdraw_sd15_lcm_full1073_kaggle.ipynb     # Notebook chạy full manifest 1073 sample để đo metric.
+```
+
+## Notebook Mini128
+
+Notebook:
+
+```text
+semanticdraw_sd15_smoke_kaggle.ipynb
 ```
 
 Manifest mặc định:
@@ -15,7 +31,41 @@ Manifest mặc định:
 Ours/test_sets/manifests/mini128/coco_val2017_multidiffusion_coco_all_512x512_mini128.jsonl
 ```
 
-Notebook này chưa dùng để benchmark chính thức. Mục tiêu là kiểm tra toàn bộ đường chạy:
+Output trên Kaggle:
+
+```text
+/kaggle/working/semanticdraw_mini128_outputs/
+/kaggle/working/semanticdraw_mini128_metrics/
+```
+
+Mục tiêu của Mini128 là kiểm tra nhanh toàn bộ đường chạy trước khi benchmark chính thức.
+
+## Notebook Full1073
+
+Notebook:
+
+```text
+semanticdraw_sd15_lcm_full1073_kaggle.ipynb
+```
+
+Manifest mặc định:
+
+```text
+Ours/data_manifests/coco_val2017_multidiffusion_coco_all_512x512_all.jsonl
+```
+
+Output trên Kaggle:
+
+```text
+/kaggle/working/semanticdraw_full1073_outputs/
+/kaggle/working/semanticdraw_full1073_metrics/
+```
+
+Notebook này dùng để chạy đủ 1073 sample hợp lệ của COCO val2017 theo manifest chính SD1.5 512x512.
+
+## Luồng Chạy
+
+Hai notebook đều đi qua cùng một pipeline:
 
 ```text
 GitHub repo
@@ -27,24 +77,9 @@ GitHub repo
 -> metrics JSON/CSV
 ```
 
-## Cây thư mục
+`MAX_DISPLAY_RESULTS = 8` chỉ giới hạn số ảnh preview hiển thị trong notebook. Tổng số ảnh được sinh bằng số record trong manifest.
 
-```text
-kaggle_semanticdraw_smoke/
-|-- README.md                                   # File này: giải thích notebook và các file/folder liên quan.
-`-- semanticdraw_sd15_smoke_kaggle.ipynb         # Notebook Kaggle chạy SemanticDraw SD1.5 + LCM, mặc định mini128.
-```
-
-## File/folder notebook đọc từ repo
-
-Notebook không tự sửa các file dưới đây, nhưng có đọc/import chúng khi chạy:
-
-```text
-Ours/test_sets/manifests/mini128/
-`-- coco_val2017_multidiffusion_coco_all_512x512_mini128.jsonl
-```
-
-Manifest mini128 cung cấp 128 record input COCO cho test.
+## File/Folder Notebook Đọc Từ Repo
 
 ```text
 Ours/src/data/
@@ -73,9 +108,7 @@ Baseline/semantic-draw-main/src/model/semantic_draw.py
 
 Source baseline chạy SemanticDraw SD1.5. Với `sd_version="1.5"`, baseline tự dùng `LCMScheduler` và gắn LCM LoRA.
 
-## File/folder notebook ghi khi chạy trên Kaggle
-
-Các output này nằm trong Kaggle runtime, không nằm trong repo:
+## File/Folder Notebook Ghi Khi Chạy Trên Kaggle
 
 ```text
 /kaggle/working/COCO/
@@ -90,40 +123,24 @@ COCO val2017 images và annotations nếu runtime chưa có sẵn.
 Cache mask đã resize để giảm chi phí decode/resize lại.
 
 ```text
-/kaggle/working/semanticdraw_mini128_outputs/
+/kaggle/working/semanticdraw_*_outputs/
 |-- *_generated.png
 |-- *_overlay.png
 `-- generation_summary.json
 ```
 
-Ảnh sinh ra, overlay mask và summary JSON của lần chạy mini128.
+Ảnh sinh ra, overlay mask và summary JSON của mỗi lần chạy.
 
 ```text
-/kaggle/working/semanticdraw_mini128_metrics/
-|-- semanticdraw_sd15_lcm_mini128_metrics.json
-`-- semanticdraw_sd15_lcm_mini128_metrics.csv
+/kaggle/working/semanticdraw_*_metrics/
+|-- *.json
+`-- *.csv
 ```
 
 Report metric sau khi notebook chạy xong.
 
-## Ghi chú đổi về mini32 hoặc smoke8
+## Ghi Chú
 
-Nếu muốn chạy mini32, đổi trong cell cấu hình:
+`BATCH_SIZE = 8` chỉ là số sample mỗi batch của dataloader. Baseline SemanticDraw hiện vẫn generate tuần tự từng ảnh, nên full 1073 sẽ lâu hơn Mini128 khoảng 8.4 lần nếu giữ cùng cấu hình.
 
-```python
-RUN_MANIFEST = REPO_ROOT / "Ours" / "test_sets" / "manifests" / "mini32" / "coco_val2017_multidiffusion_coco_all_512x512_mini32.jsonl"
-OUTPUT_DIR = Path("/kaggle/working/semanticdraw_mini32_outputs")
-METRICS_OUTPUT_DIR = Path("/kaggle/working/semanticdraw_mini32_metrics")
-METRICS_REPORT_PREFIX = "semanticdraw_sd15_lcm_mini32_metrics"
-```
-
-Nếu muốn chạy test ngắn hơn nữa, đổi sang smoke8:
-
-```python
-RUN_MANIFEST = REPO_ROOT / "Ours" / "test_sets" / "manifests" / "smoke" / "coco_val2017_multidiffusion_coco_all_512x512_smoke_bs8.jsonl"
-OUTPUT_DIR = Path("/kaggle/working/semanticdraw_smoke_outputs")
-METRICS_OUTPUT_DIR = Path("/kaggle/working/semanticdraw_smoke_metrics")
-METRICS_REPORT_PREFIX = "semanticdraw_sd15_lcm_smoke_metrics"
-```
-
-`BATCH_SIZE = 8` chỉ là số sample mỗi batch của dataloader. Tổng số ảnh được sinh bằng số record trong manifest.
+Nếu chỉ muốn debug, chạy Mini128 trước. Nếu muốn đo metric gần benchmark chính hơn, chạy Full1073.
