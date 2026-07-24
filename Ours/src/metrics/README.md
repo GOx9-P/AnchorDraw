@@ -10,9 +10,9 @@ metrics/
 |-- __init__.py            # Export API chính của package.
 |-- config.py              # Dataclass cấu hình evaluation.
 |-- io.py                  # Đọc manifest/summary và tìm path ảnh đã generate.
-|-- image_ops.py           # Resize ảnh, chuyển tensor, crop foreground bằng mask.
+|-- image_ops.py           # Resize ảnh, chuyển tensor, crop foreground và tạo background image bằng mask.
 |-- time_metrics.py        # Tính Time(s) từ generation summary.
-|-- clip_metrics.py        # Tính CLIP(pg) và CLIP(fg) bằng open_clip.
+|-- clip_metrics.py        # Tính CLIP(bg), CLIP(fg) và CLIP(pg) phụ bằng open_clip.
 |-- inception_metrics.py   # Tính FID và Inception Score bằng torchmetrics.
 |-- reporting.py           # Ghi report JSON/CSV.
 `-- evaluate_metrics.py    # CLI chạy toàn bộ evaluation.
@@ -33,10 +33,16 @@ IS
 Inception Score trên ảnh generate. Metric này càng cao càng tốt.
 
 ```text
+CLIP(bg)
+```
+
+Độ tương đồng CLIP giữa vùng background của ảnh generate và background/global caption của COCO. Vùng background được tạo bằng cách lấy `1 - union(foreground_masks)`, tức là phần không thuộc các object mask; mặc định các vùng foreground bị tô trắng trước khi đưa vào CLIP. Trong report lưu cả `clip_bg` dạng cosine và `clip_bg_x100`.
+
+```text
 CLIP(pg)
 ```
 
-Độ tương đồng CLIP giữa toàn bộ ảnh generate và background/global caption của COCO. Trong report lưu cả `clip_pg` dạng cosine và `clip_pg_x100`.
+Metric phụ để debug global alignment: đo CLIP giữa toàn bộ ảnh generate và background/global caption của COCO. Metric này vẫn được hỗ trợ nếu truyền `clip_pg`, nhưng không phải default chính vì không tương đương `CLIP_bg` trong paper.
 
 ```text
 CLIP(fg)
@@ -102,7 +108,7 @@ python -m metrics.evaluate_metrics \
   --generated-dir /kaggle/working/semanticdraw_mini128_outputs \
   --output-dir /kaggle/working/semanticdraw_mini128_metrics \
   --model-family sd15 \
-  --metrics fid,is,clip_fg,clip_pg,time \
+  --metrics fid,is,clip_fg,clip_bg,time \
   --is-splits 10
 ```
 
@@ -119,7 +125,7 @@ python -m metrics.evaluate_metrics `
   --generated-dir D:\outputs\semanticdraw_mini128_outputs `
   --output-dir Ours\eval_outputs\semanticdraw_sd15_lcm_mini128 `
   --model-family sd15 `
-  --metrics fid,is,clip_fg,clip_pg,time `
+  --metrics fid,is,clip_fg,clip_bg,time `
   --is-splits 10
 ```
 

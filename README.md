@@ -51,10 +51,10 @@ AnchorDraw/
     |   |   |-- coco_region_sampler.py                    # Filter COCO và tạo record manifest.
     |   |   |-- download_coco.py                          # Tiện ích tải COCO nếu cần setup lại data.
     |   |   `-- visualize.py                            # Xuất preview/overlay mask để debug data.
-    |   `-- metrics/                                     # Package đo FID, IS, CLIP(fg), CLIP(pg) và Time(s).
+    |   `-- metrics/                                     # Package đo FID, IS, CLIP(fg), CLIP(bg) và Time(s).
     |       |-- README.md                                 # Giải thích input/output và cách chạy metric.
     |       |-- __init__.py                               # Export API chính của package `metrics`.
-    |       |-- clip_metrics.py                           # CLIP(pg) toàn ảnh và CLIP(fg) theo mask foreground.
+    |       |-- clip_metrics.py                           # CLIP(bg) theo vùng nền và CLIP(fg) theo mask foreground.
     |       |-- config.py                                 # Dataclass cấu hình metric evaluation.
     |       |-- evaluate_metrics.py                       # CLI chạy evaluation từ manifest + generated outputs.
     |       |-- evaluator.py                              # Orchestrator nối dataloader, ảnh generate và metric accumulators.

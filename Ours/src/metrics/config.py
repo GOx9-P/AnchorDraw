@@ -6,10 +6,10 @@ from typing import Literal, Optional, Sequence, Tuple, Union
 
 
 PathLike = Union[str, Path]
-MetricName = Literal["fid", "is", "clip_fg", "clip_pg", "time"]
+MetricName = Literal["fid", "is", "clip_fg", "clip_bg", "clip_pg", "time"]
 ModelFamily = Literal["sd15", "sdxl", "sd3"]
 
-SUPPORTED_METRICS = {"fid", "is", "clip_fg", "clip_pg", "time"}
+SUPPORTED_METRICS = {"fid", "is", "clip_fg", "clip_bg", "clip_pg", "time"}
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,7 @@ class MetricEvaluationConfig:
     model_family: ModelFamily = "sd15"
     target_size: Optional[Tuple[int, int]] = None
 
-    metrics: Sequence[str] = ("fid", "is", "clip_fg", "clip_pg", "time")
+    metrics: Sequence[str] = ("fid", "is", "clip_fg", "clip_bg", "time")
     max_samples: Optional[int] = None
     error_on_missing_generated: bool = True
 
@@ -44,6 +44,7 @@ class MetricEvaluationConfig:
     clip_batch_size: int = 32
     foreground_crop_padding_ratio: float = 0.08
     mask_foreground_for_clip: bool = True
+    mask_background_for_clip: bool = True
 
     def selected_metrics(self) -> tuple[str, ...]:
         return tuple(metric.strip().lower() for metric in self.metrics)

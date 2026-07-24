@@ -18,7 +18,7 @@ except ImportError:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate generated SemanticDraw/AnchorDraw images with FID, IS, CLIP(fg), CLIP(pg), and Time(s)."
+        description="Evaluate generated SemanticDraw/AnchorDraw images with FID, IS, CLIP(fg), CLIP(bg), and Time(s)."
     )
     parser.add_argument("--manifest-path", required=True, help="Path to the JSONL manifest used for generation.")
     parser.add_argument("--coco-root", required=True, help="COCO root containing val2017/ and annotations/.")
@@ -29,7 +29,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("--model-family", default="sd15", choices=["sd15", "sdxl", "sd3"])
     parser.add_argument("--target-size", default=None, help="Optional HxW override, for example 512x512 or 1024x1024.")
-    parser.add_argument("--metrics", default="fid,is,clip_fg,clip_pg,time")
+    parser.add_argument("--metrics", default="fid,is,clip_fg,clip_bg,time")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -42,6 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--is-splits", type=int, default=10)
     parser.add_argument("--allow-missing-generated", action="store_true")
     parser.add_argument("--no-mask-foreground-for-clip", action="store_true")
+    parser.add_argument("--no-mask-background-for-clip", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -78,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         is_splits=args.is_splits,
         error_on_missing_generated=not args.allow_missing_generated,
         mask_foreground_for_clip=not args.no_mask_foreground_for_clip,
+        mask_background_for_clip=not args.no_mask_background_for_clip,
     )
 
     report = run_evaluation(config)

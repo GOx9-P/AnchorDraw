@@ -5,7 +5,7 @@ from typing import Sequence
 from PIL import Image
 import torch
 
-from .image_ops import make_masked_foreground_crop
+from .image_ops import make_masked_background_image, make_masked_foreground_crop
 
 
 class CLIPScoreAccumulator:
@@ -36,6 +36,8 @@ class CLIPScoreAccumulator:
 
         self._pg_sum = 0.0
         self._pg_count = 0
+        self._bg_sum = 0.0
+        self._bg_count = 0
         self._fg_sum = 0.0
         self._fg_count = 0
 
@@ -63,6 +65,22 @@ class CLIPScoreAccumulator:
         scores = self._score_pairs(images, prompts)
         self._pg_sum += sum(scores)
         self._pg_count += len(scores)
+
+    def update_background_region(
+        self,
+        generated_image: Image.Image,
+        foreground_masks: torch.Tensor,
+        background_prompt: str,
+        apply_mask: bool = True,
+    ) -> None:
+        background_image = make_masked_background_image(
+            generated_image,
+            foreground_masks,
+            apply_mask=apply_mask,
+        )
+        scores = self._score_pairs([background_image], [background_prompt])
+        self._bg_sum += sum(scores)
+        self._bg_count += len(scores)
 
     def update_foreground_regions(
         self,
@@ -94,6 +112,11 @@ class CLIPScoreAccumulator:
             metrics["clip_pg"] = value
             metrics["clip_pg_x100"] = value * 100.0
             metrics["clip_pg_count"] = float(self._pg_count)
+        if self._bg_count:
+            value = self._bg_sum / self._bg_count
+            metrics["clip_bg"] = value
+            metrics["clip_bg_x100"] = value * 100.0
+            metrics["clip_bg_count"] = float(self._bg_count)
         if self._fg_count:
             value = self._fg_sum / self._fg_count
             metrics["clip_fg"] = value

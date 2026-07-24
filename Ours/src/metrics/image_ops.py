@@ -68,3 +68,27 @@ def make_masked_foreground_crop(
     white_np = np.full_like(image_np, 255)
     masked_np = np.where(mask_np[..., None], image_np, white_np).astype(np.uint8)
     return Image.fromarray(masked_np, mode="RGB").crop(bbox)
+
+
+def make_masked_background_image(
+    image: Image.Image,
+    foreground_masks: torch.Tensor,
+    apply_mask: bool = True,
+) -> Image.Image:
+    if foreground_masks.ndim != 4 or foreground_masks.shape[1] != 1:
+        raise ValueError(
+            "Expected foreground_masks shape (P,1,H,W), "
+            f"got {tuple(foreground_masks.shape)}"
+        )
+
+    height, width = int(foreground_masks.shape[-2]), int(foreground_masks.shape[-1])
+    resized = resize_rgb(image, (height, width))
+    if not apply_mask:
+        return resized
+
+    foreground_union = foreground_masks.detach().cpu().to(dtype=torch.float32).amax(dim=0).squeeze(0) > 0
+    background_mask_np = ~foreground_union.numpy()
+    image_np = np.asarray(resized, dtype=np.uint8)
+    white_np = np.full_like(image_np, 255)
+    masked_np = np.where(background_mask_np[..., None], image_np, white_np).astype(np.uint8)
+    return Image.fromarray(masked_np, mode="RGB")

@@ -5,7 +5,7 @@ Thư mục này chứa notebook chạy baseline SemanticDraw trên Kaggle bằng
 ```text
 model   = Stable Diffusion 1.5
 sampler = LCM
-metric  = FID, IS, CLIP(fg), CLIP(pg), Time(s)
+metric  = FID, IS, CLIP(fg), CLIP(bg), Time(s)
 ```
 
 Có 2 notebook chính:
@@ -99,7 +99,7 @@ Package data loader tạo batch, mask tensor, metadata và overlay preview cho n
 Ours/src/metrics/
 ```
 
-Package metric đo FID, IS, CLIP(fg), CLIP(pg) và Time(s) từ ảnh đã sinh.
+Package metric đo FID, IS, CLIP(fg), CLIP(bg) và Time(s) từ ảnh đã sinh.
 
 ```text
 Baseline/semantic-draw-main/src/model/pipeline_semantic_draw.py

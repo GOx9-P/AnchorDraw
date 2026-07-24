@@ -84,7 +84,7 @@ def run_evaluation(config: MetricEvaluationConfig) -> dict[str, Any]:
         )
 
     clip = None
-    if "clip_fg" in selected_metrics or "clip_pg" in selected_metrics:
+    if "clip_fg" in selected_metrics or "clip_bg" in selected_metrics or "clip_pg" in selected_metrics:
         from .clip_metrics import CLIPScoreAccumulator
 
         clip = CLIPScoreAccumulator(
@@ -149,6 +149,13 @@ def run_evaluation(config: MetricEvaluationConfig) -> dict[str, Any]:
             if clip is not None:
                 if "clip_pg" in selected_metrics:
                     clip.update_prompt_global([generated], [str(payload["background_prompt"])])
+                if "clip_bg" in selected_metrics:
+                    clip.update_background_region(
+                        generated,
+                        payload["masks"].to(dtype=torch.float32).cpu(),
+                        str(payload["background_prompt"]),
+                        apply_mask=config.mask_background_for_clip,
+                    )
                 if "clip_fg" in selected_metrics:
                     clip.update_foreground_regions(
                         generated,
