@@ -96,3 +96,7 @@ temp/
 *.tmp
 Explain_baseline/
 plan.md
+
+#Private files
+literature_review_core_papers.xlsx
+experiment_exports/

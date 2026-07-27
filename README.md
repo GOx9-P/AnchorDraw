@@ -31,10 +31,15 @@ AnchorDraw/
     |   |-- Plan_SemanticAnchor.pdf                      # Bản plan/proposal dạng PDF cho hướng SemanticAnchor.
     |   |-- Proposal.pdf                                 # Proposal nghiên cứu chính.
     |   `-- proposal.txt                                 # Proposal dạng text để đọc/search nhanh.
-    |-- kaggle_semanticdraw_smoke/                       # Notebook Kaggle chạy SemanticDraw SD1.5 + LCM.
+    |-- kaggle_semanticdraw_smoke/                       # Notebook Kaggle chạy SemanticDraw với LCM/Hyper-SD/Euler.
     |   |-- README.md                                    # Mô tả notebook, output và các file/folder liên quan.
     |   |-- semanticdraw_sd15_smoke_kaggle.ipynb          # Notebook debug nhanh, mặc định chạy mini128 rồi đo FID/IS/CLIP/Time.
-    |   `-- semanticdraw_sd15_lcm_full1073_kaggle.ipynb   # Notebook chạy full manifest 1073 sample để đo metric chính.
+    |   |-- semanticdraw_sd15_lcm_full1073_kaggle.ipynb   # Notebook chạy full manifest 1073 sample với sampler LCM.
+    |   |-- semanticdraw_sd15_hypersd_full1073_kaggle.ipynb # Notebook chạy full manifest 1073 sample với sampler Hyper-SD.
+    |   `-- semanticdraw_sdxl_euler_full1073_kaggle.ipynb # Notebook chạy full manifest 1073 sample với SDXL + Euler Discrete.
+    |-- colab_semanticdraw_smoke/                        # Notebook Colab để validate SemanticDraw SDXL trước khi benchmark.
+    |   |-- README.md                                    # Mô tả notebook Colab, profile smoke/full và output zip.
+    |   `-- semanticdraw_sdxl_euler_smoke_bs2_colab.ipynb # Notebook Colab mặc định chạy smoke test bs2 với SDXL + Euler Discrete.
     |-- src/                                             # Source code xây dựng cho phần thí nghiệm.
     |   |-- data/                                        # Package dataloader COCO cho SemanticDraw/AnchorDraw.
     |   |   |-- README.md                                 # Giải thích riêng từng file trong package dataloader.
