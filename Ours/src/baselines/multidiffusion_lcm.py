@@ -50,6 +50,7 @@ class MultiDiffusionLCM:
         dtype: torch.dtype = torch.float16,
         t_index_list: Sequence[int] = (0, 4, 12, 25, 37),
         schedule_steps: int = 50,
+        show_progress: bool = False,
     ) -> None:
         from diffusers import LCMScheduler, StableDiffusionPipeline
 
@@ -59,6 +60,7 @@ class MultiDiffusionLCM:
         self.dtype = dtype
         self.t_index_list = list(t_index_list)
         self.schedule_steps = int(schedule_steps)
+        self.show_progress = bool(show_progress)
 
         try:
             self.pipe = StableDiffusionPipeline.from_pretrained(
@@ -208,6 +210,7 @@ class MultiDiffusionLCM:
         width: int = 512,
         guidance_scale: float = 1.0,
         bootstrapping: int = 1,
+        show_progress: bool | None = None,
     ) -> Image.Image:
         if len(prompts) != int(masks.shape[0]):
             raise ValueError(f"prompts/masks mismatch: {len(prompts)} prompts vs {int(masks.shape[0])} masks")
@@ -243,8 +246,13 @@ class MultiDiffusionLCM:
             if self.device.type == "cuda"
             else contextlib.nullcontext()
         )
+        if show_progress is None:
+            show_progress = self.show_progress
+
         with autocast_ctx:
-            for step_index, timestep in enumerate(tqdm(self.timesteps, leave=False)):
+            for step_index, timestep in enumerate(
+                tqdm(self.timesteps, leave=False, disable=not bool(show_progress))
+            ):
                 count.zero_()
                 value.zero_()
 

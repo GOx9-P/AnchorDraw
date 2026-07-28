@@ -344,7 +344,7 @@ class MultiDiffusionSDXLEuler:
         height: int = 1024,
         width: int = 1024,
         guidance_scale: float = 1.0,
-        bootstrapping: int = 0,
+        bootstrapping: int = 2,
         t_index_list: Sequence[int] | None = None,
         schedule_steps: int | None = None,
     ) -> Image.Image:
@@ -381,13 +381,16 @@ class MultiDiffusionSDXLEuler:
             width,
         )
 
-        latent = torch.randn(
+        base_noise = torch.randn(
             (1, self.unet.config.in_channels, latent_h, latent_w),
             dtype=self.dtype,
             device=self.device,
         )
-        latent = latent * float(self.scheduler.init_noise_sigma)
-        region_noise = latent.clone().repeat(max(num_regions - 1, 1), 1, 1, 1)
+        latent = base_noise * float(self.scheduler.init_noise_sigma)
+        # MultiDiffusion bootstrapping adds clean background latents to the
+        # same unit Gaussian noise used to initialize the image. Do not reuse
+        # `latent` here: Euler already scales it by init_noise_sigma.
+        region_noise = base_noise.repeat(max(num_regions - 1, 1), 1, 1, 1)
 
         views = get_sdxl_views(
             height,
