@@ -9,7 +9,41 @@ import torch.nn.functional as F
 import torchvision.transforms as T
 from tqdm.auto import tqdm
 
-from .multidiffusion_lcm import get_views
+def get_sdxl_views(
+    image_height: int,
+    image_width: int,
+    vae_scale_factor: int = 8,
+    window_size: int = 128,
+    stride: int = 16,
+) -> list[tuple[int, int, int, int]]:
+    """Return SDXL-native MultiDiffusion views in latent coordinates.
+
+    SDXL's native training resolution is 1024x1024, i.e. 128x128 latent
+    pixels with the usual VAE scale factor of 8. Reusing the SD1.5
+    MultiDiffusion window of 64 latent pixels would split a native SDXL
+    1024x1024 image into 81 windows, which is both slow and unstable.
+    """
+    latent_height = image_height // vae_scale_factor
+    latent_width = image_width // vae_scale_factor
+    if latent_height <= window_size and latent_width <= window_size:
+        return [(0, latent_height, 0, latent_width)]
+
+    def starts(size: int) -> list[int]:
+        if size <= window_size:
+            return [0]
+        values = list(range(0, size - window_size + 1, stride))
+        last = size - window_size
+        if values[-1] != last:
+            values.append(last)
+        return values
+
+    views = []
+    for h_start in starts(latent_height):
+        h_end = min(h_start + window_size, latent_height)
+        for w_start in starts(latent_width):
+            w_end = min(w_start + window_size, latent_width)
+            views.append((h_start, h_end, w_start, w_end))
+    return views
 
 
 class MultiDiffusionSDXLEuler:
@@ -37,6 +71,8 @@ class MultiDiffusionSDXLEuler:
         t_index_list: Sequence[int] = (0, 4, 12, 25, 37),
         schedule_steps: int = 50,
         safe_vae: bool = True,
+        view_window_size: int = 128,
+        view_stride: int = 16,
     ) -> None:
         from diffusers import EulerDiscreteScheduler, StableDiffusionXLPipeline, UNet2DConditionModel
         from huggingface_hub import hf_hub_download
@@ -52,6 +88,8 @@ class MultiDiffusionSDXLEuler:
         self.t_index_list = list(t_index_list)
         self.schedule_steps = int(schedule_steps)
         self.safe_vae = bool(safe_vae)
+        self.view_window_size = int(view_window_size)
+        self.view_stride = int(view_stride)
 
         unet = UNet2DConditionModel.from_config(model_id, subfolder="unet").to(device, dtype)
         weight_path = hf_hub_download(
@@ -351,7 +389,13 @@ class MultiDiffusionSDXLEuler:
         latent = latent * float(self.scheduler.init_noise_sigma)
         region_noise = latent.clone().repeat(max(num_regions - 1, 1), 1, 1, 1)
 
-        views = get_views(height, width)
+        views = get_sdxl_views(
+            height,
+            width,
+            vae_scale_factor=self.vae_scale_factor,
+            window_size=self.view_window_size,
+            stride=self.view_stride,
+        )
         count = torch.zeros_like(latent)
         value = torch.zeros_like(latent)
         autocast_ctx = (
