@@ -344,7 +344,7 @@ class MultiDiffusionSDXLEuler:
         height: int = 1024,
         width: int = 1024,
         guidance_scale: float = 1.0,
-        bootstrapping: int = 1,
+        bootstrapping: int = 0,
         t_index_list: Sequence[int] | None = None,
         schedule_steps: int | None = None,
     ) -> Image.Image:
