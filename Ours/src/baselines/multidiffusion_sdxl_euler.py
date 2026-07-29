@@ -65,8 +65,8 @@ class MultiDiffusionSDXLEuler:
         t_index_list: Sequence[int] = (0, 4, 12, 25, 37),
         schedule_steps: int = 50,
         safe_vae: bool = True,
-        view_window_size: int = 64,
-        view_stride: int = 8,
+        view_window_size: int = 128,
+        view_stride: int = 128,
         runtime_checks: bool = True,
     ) -> None:
         from diffusers import EulerDiscreteScheduler, StableDiffusionXLPipeline, UNet2DConditionModel
