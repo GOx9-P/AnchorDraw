@@ -447,9 +447,12 @@ class MultiDiffusionSDXLEuler:
                     latent_model_input = torch.cat([latent_view] * 2)
                     latent_model_input = self.scheduler_scale_model_input(latent_model_input, step_index)
 
-                    add_time_ids_input = add_time_ids.clone()
-                    add_time_ids_input[:, 2] = h_start * self.vae_scale_factor
-                    add_time_ids_input[:, 3] = w_start * self.vae_scale_factor
+                    # Keep SDXL global crop coordinates fixed at (0, 0).
+                    # SemanticDraw SDXL builds `time_ids` this way for the full
+                    # canvas. Updating crop coordinates per latent tile makes
+                    # SDXL-Lightning treat every view as a separate crop and
+                    # tends to create visible mosaic/striping artifacts.
+                    add_time_ids_input = add_time_ids
                     added_cond_kwargs = {
                         "text_embeds": add_text_embeds,
                         "time_ids": add_time_ids_input,
