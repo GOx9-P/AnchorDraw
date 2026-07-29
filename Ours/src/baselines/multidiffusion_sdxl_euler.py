@@ -13,16 +13,10 @@ def get_sdxl_views(
     image_height: int,
     image_width: int,
     vae_scale_factor: int = 8,
-    window_size: int = 128,
-    stride: int = 16,
+    window_size: int = 64,
+    stride: int = 8,
 ) -> list[tuple[int, int, int, int]]:
-    """Return SDXL-native MultiDiffusion views in latent coordinates.
-
-    SDXL's native training resolution is 1024x1024, i.e. 128x128 latent
-    pixels with the usual VAE scale factor of 8. Reusing the SD1.5
-    MultiDiffusion window of 64 latent pixels would split a native SDXL
-    1024x1024 image into 81 windows, which is both slow and unstable.
-    """
+    """Return original MultiDiffusion-style views in latent coordinates."""
     latent_height = image_height // vae_scale_factor
     latent_width = image_width // vae_scale_factor
     if latent_height <= window_size and latent_width <= window_size:
@@ -71,8 +65,9 @@ class MultiDiffusionSDXLEuler:
         t_index_list: Sequence[int] = (0, 4, 12, 25, 37),
         schedule_steps: int = 50,
         safe_vae: bool = True,
-        view_window_size: int = 128,
-        view_stride: int = 16,
+        view_window_size: int = 64,
+        view_stride: int = 8,
+        runtime_checks: bool = True,
     ) -> None:
         from diffusers import EulerDiscreteScheduler, StableDiffusionXLPipeline, UNet2DConditionModel
         from huggingface_hub import hf_hub_download
@@ -90,6 +85,7 @@ class MultiDiffusionSDXLEuler:
         self.safe_vae = bool(safe_vae)
         self.view_window_size = int(view_window_size)
         self.view_stride = int(view_stride)
+        self.runtime_checks = bool(runtime_checks)
 
         unet = UNet2DConditionModel.from_config(model_id, subfolder="unet").to(device, dtype)
         weight_path = hf_hub_download(
@@ -139,6 +135,10 @@ class MultiDiffusionSDXLEuler:
     @staticmethod
     def _module_dtype(module: torch.nn.Module) -> torch.dtype:
         return next(module.parameters()).dtype
+
+    def _assert_finite(self, name: str, tensor: torch.Tensor) -> None:
+        if self.runtime_checks and not torch.isfinite(tensor).all():
+            raise FloatingPointError(f"{name} contains NaN/Inf; this is a wrapper/runtime error.")
 
     @torch.no_grad()
     def prepare_lightning_schedule(
@@ -286,6 +286,7 @@ class MultiDiffusionSDXLEuler:
         try:
             posterior = self.vae.encode(images.to(device=self.device, dtype=encode_dtype)).latent_dist
             latents = posterior.sample() * self.latent_scaling_factor
+            self._assert_finite("encoded VAE latents", latents)
         finally:
             if self.safe_vae and original_dtype != torch.float32:
                 self.vae.to(dtype=original_dtype)
@@ -316,7 +317,9 @@ class MultiDiffusionSDXLEuler:
                 latents = latents * latents_std / self.latent_scaling_factor + latents_mean
             else:
                 latents = latents / self.latent_scaling_factor
+            self._assert_finite("decoded VAE input latents", latents)
             images = self.vae.decode(latents, return_dict=False)[0]
+            self._assert_finite("decoded VAE image tensor", images)
         finally:
             if decode_dtype == torch.float32 and original_dtype != torch.float32:
                 self.vae.to(dtype=original_dtype)
@@ -374,12 +377,14 @@ class MultiDiffusionSDXLEuler:
         masks = masks.clamp(0, 1)
 
         bootstrapping_backgrounds = self.get_random_background(int(bootstrapping), height, width)
+        self._assert_finite("bootstrapping backgrounds", bootstrapping_backgrounds)
         prompt_embeds, add_text_embeds, add_time_ids = self.get_sdxl_text_conditioning(
             prompts,
             list(negative_prompts),
             height,
             width,
         )
+        self._assert_finite("prompt embeddings", prompt_embeds)
 
         base_noise = torch.randn(
             (1, self.unet.config.in_channels, latent_h, latent_w),
@@ -387,9 +392,9 @@ class MultiDiffusionSDXLEuler:
             device=self.device,
         )
         latent = base_noise * float(self.scheduler.init_noise_sigma)
-        # MultiDiffusion bootstrapping adds clean background latents to the
-        # same unit Gaussian noise used to initialize the image. Do not reuse
-        # `latent` here: Euler already scales it by init_noise_sigma.
+        self._assert_finite("initial latent", latent)
+        # Runtime correctness: background add_noise expects unit Gaussian
+        # noise, while the image latent above is already sigma-scaled.
         region_noise = base_noise.repeat(max(num_regions - 1, 1), 1, 1, 1)
 
         views = get_sdxl_views(
@@ -436,6 +441,7 @@ class MultiDiffusionSDXLEuler:
                             step_index,
                             initial=True,
                         )
+                        self._assert_finite("bootstrapped background latent", background)
                         latent_view[1:] = latent_view[1:] * masks_view[1:] + background * (1 - masks_view[1:])
 
                     latent_model_input = torch.cat([latent_view] * 2)
@@ -455,18 +461,23 @@ class MultiDiffusionSDXLEuler:
                         added_cond_kwargs=added_cond_kwargs,
                         return_dict=False,
                     )[0]
+                    self._assert_finite("UNet noise prediction", noise_pred)
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    self._assert_finite("guided noise prediction", noise_pred)
 
                     latents_view_denoised = self.scheduler_step(noise_pred, step_index, latent_view)
+                    self._assert_finite("denoised view latent", latents_view_denoised)
                     value[:, :, h_start:h_end, w_start:w_end] += (
                         latents_view_denoised * masks_view
                     ).sum(dim=0, keepdim=True)
                     count[:, :, h_start:h_end, w_start:w_end] += masks_view.sum(dim=0, keepdim=True)
 
-                latent = torch.where(count > 0, value / count.clamp_min(1e-6), latent)
+                latent = torch.where(count > 0, value / count.clamp_min(1e-6), value)
+                self._assert_finite("mixed latent", latent)
                 if step_index < len(self.timesteps) - 1:
                     latent = self.scheduler_add_noise(latent, None, step_index + 1)
+                    self._assert_finite("renoised latent", latent)
 
         images = self.decode_latents(latent)
         return T.ToPILImage()(images[0].detach().cpu())
