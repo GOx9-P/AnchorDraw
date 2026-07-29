@@ -7,7 +7,7 @@ from PIL import Image
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 
 def get_views(
@@ -249,10 +249,10 @@ class MultiDiffusionLCM:
         if show_progress is None:
             show_progress = self.show_progress
 
+        timestep_iterable = tqdm(self.timesteps, leave=False) if show_progress else self.timesteps
+
         with autocast_ctx:
-            for step_index, timestep in enumerate(
-                tqdm(self.timesteps, leave=False, disable=not bool(show_progress))
-            ):
+            for step_index, timestep in enumerate(timestep_iterable):
                 count.zero_()
                 value.zero_()
 
