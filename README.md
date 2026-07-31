@@ -5,6 +5,7 @@ AnchorDraw/
 |-- .gitignore                                           # Quy tắc bỏ qua cache, dataset lớn, checkpoint, output thí nghiệm và file tạm.
 |-- README.md                                            # Cây thư mục của repository và ý nghĩa ngắn của từng file/folder.
 |-- Baseline/                                            # Chứa source code baseline gốc dùng để kế thừa và đối chiếu.
+|   |-- MultiDiffusion-master/                           # Source baseline MultiDiffusion gốc để chạy/đối chiếu method MultiDiffusion.
 |   `-- semantic-draw-main/                              # Source chính của project SemanticDraw gốc.
 |       |-- assets/                                      # Tài nguyên minh họa/demo đi kèm baseline.
 |       |-- demo/                                        # Script hoặc notebook demo của baseline.
@@ -31,16 +32,37 @@ AnchorDraw/
     |   |-- Plan_SemanticAnchor.pdf                      # Bản plan/proposal dạng PDF cho hướng SemanticAnchor.
     |   |-- Proposal.pdf                                 # Proposal nghiên cứu chính.
     |   `-- proposal.txt                                 # Proposal dạng text để đọc/search nhanh.
+    |-- experiment_exports/                              # Nơi lưu generated images, logs, summary và reference images để đo metric.
+    |   |-- README.md                                    # Giải thích loại artifact nên lưu trong folder export.
+    |   |-- reference_images/                            # Ảnh COCO gốc đã resize tương ứng từng export để đo clean-fid.
+    |   |-- sdraw_sdxl_lightning4_euler_1024_full1073_b2_bt2_colab_24gb/ # Export SDXL Lightning Euler full1073.
+    |   `-- semanticdraw_sd15_hypersd_full1073__metric_export/ # Export SD1.5 Hyper-SD full1073.
     |-- kaggle_semanticdraw_smoke/                       # Notebook Kaggle chạy SemanticDraw với LCM/Hyper-SD/Euler.
     |   |-- README.md                                    # Mô tả notebook, output và các file/folder liên quan.
     |   |-- semanticdraw_sd15_smoke_kaggle.ipynb          # Notebook debug nhanh, mặc định chạy mini128 rồi đo FID/IS/CLIP/Time.
     |   |-- semanticdraw_sd15_lcm_full1073_kaggle.ipynb   # Notebook chạy full manifest 1073 sample với sampler LCM.
     |   |-- semanticdraw_sd15_hypersd_full1073_kaggle.ipynb # Notebook chạy full manifest 1073 sample với sampler Hyper-SD.
     |   `-- semanticdraw_sdxl_euler_full1073_kaggle.ipynb # Notebook chạy full manifest 1073 sample với SDXL + Euler Discrete.
-    |-- colab_semanticdraw_smoke/                        # Notebook Colab để validate SemanticDraw SDXL trước khi benchmark.
-    |   |-- README.md                                    # Mô tả notebook Colab, profile smoke/full và output zip.
-    |   `-- semanticdraw_sdxl_euler_smoke_bs2_colab.ipynb # Notebook Colab mặc định chạy smoke test bs2 với SDXL + Euler Discrete.
+    |-- kaggle_multidiffusion_experiments/               # Notebook Kaggle chạy baseline MultiDiffusion cho SD1.5 + LCM/Hyper-SD.
+    |   |-- README.md                                    # Mô tả notebook, config và mapping với baseline MultiDiffusion.
+    |   |-- multidiffusion_sd15_lcm_full1073_kaggle.ipynb # Notebook chạy MultiDiffusion (MD) + SD1.5 + LCM, đổi smoke/mini/full bằng `RUN_PROFILE`.
+    |   `-- multidiffusion_sd15_hypersd_full1073_kaggle.ipynb # Notebook chạy MultiDiffusion (MD) + SD1.5 + Hyper-SD, đổi smoke/mini/full bằng `RUN_PROFILE`.
+    |-- colab_multidiffusion_experiments/                # Notebook Colab chạy baseline MultiDiffusion cho SDXL + Euler Discrete.
+    |   |-- README.md                                    # Mô tả notebook Colab MultiDiffusion, profile và mode GPU.
+    |   `-- multidiffusion_sdxl_euler_colab.ipynb        # Notebook chạy MultiDiffusion (MD) + SDXL-Lightning + Euler Discrete.
+    |-- kaggle_metric_eval/                              # Notebook Kaggle đo FID bằng clean-fid từ generated/reference images.
+    |   |-- README.md                                    # Hướng dẫn cấu trúc dataset upload lên Kaggle để đo clean-fid.
+    |   `-- cleanfid_fid_eval_kaggle.ipynb               # Notebook đo FID cho các export trong experiment_exports.
+    |-- colab_semanticdraw_smoke/                        # Notebook Colab validate/chạy SemanticDraw cho SDXL và SD3.
+    |   |-- README.md                                    # Mô tả các notebook Colab, profile smoke/full và output zip.
+    |   |-- semanticdraw_sdxl_euler_smoke_bs2_colab.ipynb # Notebook Colab chạy SDXL + Euler Discrete.
+    |   `-- semanticdraw_sd3_flashflowmatch_full1073_colab.ipynb # Notebook chạy SD3 Medium + jasperai/flash-sd3.
     |-- src/                                             # Source code xây dựng cho phần thí nghiệm.
+    |   |-- baselines/                                   # Wrapper/adaptation để chạy baseline method trong framework thí nghiệm chung.
+    |   |   |-- __init__.py                              # Export API baseline wrappers.
+    |   |   |-- multidiffusion_lcm.py                    # MultiDiffusion fusion gốc + sampler LCM cho SD1.5.
+    |   |   |-- multidiffusion_hypersd.py                # MultiDiffusion fusion gốc + sampler Hyper-SD cho SD1.5.
+    |   |   `-- multidiffusion_sdxl_euler.py            # MultiDiffusion fusion gốc + SDXL-Lightning + Euler Discrete.
     |   |-- data/                                        # Package dataloader COCO cho SemanticDraw/AnchorDraw.
     |   |   |-- README.md                                 # Giải thích riêng từng file trong package dataloader.
     |   |   |-- __init__.py                               # Export API package `data`.
