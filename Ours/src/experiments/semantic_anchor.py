@@ -226,6 +226,101 @@ class SemanticAnchorCapture:
         self.restore()
 
 
+@dataclass
+class CapturedLatentStep:
+    """Global canvas latent immediately after one reverse-diffusion step."""
+
+    step_index: int
+    timestep: int
+    latent: torch.Tensor
+
+
+class SemanticLatentStepCapture:
+    """Capture SemanticDraw's merged canvas latent without changing its loop.
+
+    SemanticDraw calls ``scheduler_add_noise`` after each merged denoising step,
+    except for the final step. The wrapper stores that method's input before
+    noise is added. The final latent is captured when the baseline calls
+    ``decode_latents``. Captures are copied to CPU and can therefore be decoded
+    after generation without retaining the UNet graph or GPU activations.
+    """
+
+    def __init__(self, pipeline) -> None:
+        self.pipeline = pipeline
+        self.enabled = False
+        self.timesteps: List[int] = []
+        self.records: List[CapturedLatentStep] = []
+        self._next_noise_index = 1
+        self._original_scheduler_add_noise = None
+        self._original_decode_latents = None
+
+    @staticmethod
+    def _as_int(value) -> int:
+        if isinstance(value, torch.Tensor):
+            value = value.detach().flatten()[0].item()
+        return int(value)
+
+    def configure(self, timesteps: Sequence[int], enabled: bool = True) -> None:
+        self.timesteps = [self._as_int(timestep) for timestep in timesteps]
+        self.records.clear()
+        self._next_noise_index = 1
+        self.enabled = enabled
+
+    def disable(self) -> None:
+        self.enabled = False
+
+    def _store(self, step_index: int, latent: torch.Tensor) -> None:
+        if step_index < 0 or step_index >= len(self.timesteps):
+            return
+        if any(record.step_index == step_index for record in self.records):
+            return
+        self.records.append(
+            CapturedLatentStep(
+                step_index=step_index,
+                timestep=self.timesteps[step_index],
+                latent=latent.detach().to(device="cpu", dtype=torch.float16).clone(),
+            )
+        )
+
+    def install(self) -> "SemanticLatentStepCapture":
+        if self._original_scheduler_add_noise is not None:
+            return self
+
+        self._original_scheduler_add_noise = self.pipeline.scheduler_add_noise
+        self._original_decode_latents = self.pipeline.decode_latents
+
+        def scheduler_add_noise_wrapper(latent, noise, index):
+            index_int = self._as_int(index)
+            if self.enabled and index_int == self._next_noise_index:
+                self._store(index_int - 1, latent)
+                self._next_noise_index += 1
+            return self._original_scheduler_add_noise(latent, noise, index)
+
+        def decode_latents_wrapper(latents, vae=None):
+            if self.enabled and self.timesteps:
+                self._store(len(self.timesteps) - 1, latents)
+            return self._original_decode_latents(latents, vae)
+
+        self.pipeline.scheduler_add_noise = scheduler_add_noise_wrapper
+        self.pipeline.decode_latents = decode_latents_wrapper
+        return self
+
+    def restore(self) -> None:
+        self.enabled = False
+        if self._original_scheduler_add_noise is not None:
+            self.pipeline.scheduler_add_noise = self._original_scheduler_add_noise
+            self._original_scheduler_add_noise = None
+        if self._original_decode_latents is not None:
+            self.pipeline.decode_latents = self._original_decode_latents
+            self._original_decode_latents = None
+
+    def __enter__(self) -> "SemanticLatentStepCapture":
+        return self.install()
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.restore()
+
+
 def aggregate_attention_maps(
     captured_maps: Mapping[Tuple[int, int], Iterable[CapturedLayerMap]],
     output_size: Tuple[int, int],
