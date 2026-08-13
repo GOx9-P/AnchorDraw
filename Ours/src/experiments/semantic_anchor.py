@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from math import isqrt
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
+from typing import Dict, Iterable, List, Literal, Mapping, MutableMapping, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -339,6 +339,312 @@ def aggregate_attention_maps(
             result = (result - result.min()) / (result.max() - result.min()).clamp_min(1e-8)
             aggregated[key] = result
     return aggregated
+
+
+@dataclass
+class SemanticAnchorRuntimeStep:
+    """How one denoising step was spatially centered at runtime.
+
+    ``anchor_source_step_index`` is deliberately separate from ``step_index``:
+    an attention map becomes available only *after* the UNet call of its own
+    step, so it can guide the following denoising step, never the same one.
+    """
+
+    step_index: int
+    timestep: int
+    selection_source: str
+    anchor_source_step_index: int | None
+    anchor_source_timestep: int | None
+    points_xy: List[Tuple[float, float]]
+
+
+def _shift_to_reference_points(
+    latents: torch.Tensor,
+    points_xy: Sequence[Tuple[float, float]],
+    *,
+    image_size: Tuple[int, int],
+    reverse: bool = False,
+) -> torch.Tensor:
+    """Move per-region reference points to the latent canvas center.
+
+    SemanticDraw's baseline moves each mask bounding-box center to the canvas
+    center during bootstrap. This is the same operation with an arbitrary
+    image-space point, then it is reversed after the UNet prediction.
+    """
+
+    if len(points_xy) != latents.shape[0]:
+        raise ValueError(
+            f"Expected {latents.shape[0]} reference points, got {len(points_xy)}."
+        )
+
+    image_h, image_w = image_size
+    latent_h, latent_w = latents.shape[-2:]
+    shifts: List[Tuple[int, int]] = []
+    for x, y in points_xy:
+        # Pixel centers are mapped consistently from image coordinates to
+        # the VAE latent canvas. ``roll`` expects (dy, dx).
+        x_latent = round(float(x) * latent_w / image_w)
+        y_latent = round(float(y) * latent_h / image_h)
+        dy = latent_h // 2 - y_latent
+        dx = latent_w // 2 - x_latent
+        if reverse:
+            dy, dx = -dy, -dx
+        shifts.append((dy, dx))
+
+    return torch.stack(
+        [latent.roll(shifts=shift, dims=(-2, -1)) for latent, shift in zip(latents, shifts)],
+        dim=0,
+    )
+
+
+class SemanticAnchorRuntime:
+    """Runtime ablation of SemanticDraw's centering rule.
+
+    The original baseline file is never changed.  This runner faithfully
+    reproduces its SD1.5 denoising/mask-mixing loop for the experiment's input
+    protocol, with one controlled intervention:
+
+    * step 0 uses the baseline bbox-centering bootstrap exactly;
+    * later steps either use no extra centering (``baseline``), bbox centers
+      again (``bbox_control``), or the masked attention anchor captured at the
+      immediately preceding step (``semantic_anchor``).
+
+    The delayed use of attention is causally valid: the map from step ``i`` is
+    produced by that step's UNet, therefore it can first be used at ``i + 1``.
+    The final step is still executed and decoded normally.
+    """
+
+    def __init__(
+        self,
+        pipeline,
+        attention_capture: SemanticAnchorCapture,
+        *,
+        image_size: Tuple[int, int],
+    ) -> None:
+        self.pipeline = pipeline
+        self.attention_capture = attention_capture
+        self.image_size = image_size
+        self.step_records: List[SemanticAnchorRuntimeStep] = []
+
+    def _anchors_from_current_step(
+        self,
+        timestep: int,
+        foreground_masks: torch.Tensor,
+    ) -> List[Tuple[float, float]]:
+        maps = aggregate_attention_maps(self.attention_capture.maps, self.image_size)
+        anchors: List[Tuple[float, float]] = []
+        for region_index, mask in enumerate(foreground_masks):
+            key = (int(timestep), region_index)
+            if key not in maps:
+                raise RuntimeError(
+                    f"Missing cross-attention map for timestep={timestep}, region={region_index}."
+                )
+            measurement = compute_anchor_measurements(maps[key], mask.cpu())
+            anchors.append((float(measurement["anchor_x"]), float(measurement["anchor_y"])))
+        return anchors
+
+    @torch.no_grad()
+    def generate(
+        self,
+        *,
+        prompts: Sequence[str],
+        negative_prompts: Sequence[str],
+        masks: torch.Tensor,
+        foreground_masks: torch.Tensor,
+        mode: Literal["baseline", "bbox_control", "semantic_anchor"],
+        bootstrap_steps: int = 1,
+        mask_stds: float | Sequence[float] | None = None,
+        mask_strengths: float | Sequence[float] | None = None,
+        preprocess_mask_cover_alpha: float | None = None,
+        guidance_scale: float | None = None,
+        use_boolean_mask: bool = True,
+    ):
+        """Generate one image using the controlled centering ablation.
+
+        This intentionally supports the manifest protocol used by the
+        experiment: a tensor of mutually aligned background+foreground masks
+        and one prompt per mask.  Background image/BLIP branches are outside
+        the ablation and remain available through the unmodified baseline.
+        """
+
+        if mode not in {"baseline", "bbox_control", "semantic_anchor"}:
+            raise ValueError(f"Unknown mode: {mode}")
+        if len(prompts) != len(negative_prompts) or len(prompts) != int(masks.shape[0]):
+            raise ValueError("The experiment requires exactly one prompt and negative prompt per mask.")
+        if int(masks.shape[0]) != int(foreground_masks.shape[0]) + 1:
+            raise ValueError("Expected one background mask followed by foreground masks.")
+        if bootstrap_steps != 1:
+            raise ValueError("This ablation is defined for one baseline bootstrap step only.")
+
+        pipeline = self.pipeline
+        height, width = self.image_size
+        if height > 512 or width > 512:
+            raise ValueError("Semantic Anchor SD1.5 ablation currently validates the 512x512 protocol only.")
+
+        num_masks = len(prompts)
+        if guidance_scale is None:
+            guidance_scale = pipeline.default_guidance_scale
+        if mask_stds is None:
+            mask_stds = pipeline.default_mask_std
+        if mask_strengths is None:
+            mask_strengths = pipeline.default_mask_strength
+        if preprocess_mask_cover_alpha is None:
+            preprocess_mask_cover_alpha = pipeline.default_preprocess_mask_cover_alpha
+
+        fg_masks, _, _ = pipeline.process_mask(
+            masks,
+            mask_strengths,
+            mask_stds,
+            height=height,
+            width=width,
+            use_boolean_mask=use_boolean_mask,
+            timesteps=pipeline.timesteps,
+            preprocess_mask_cover_alpha=preprocess_mask_cover_alpha,
+        )
+        # The manifest already provides a background region, so no external
+        # background latent is mixed in this controlled experiment.
+        bg_masks = (1 - fg_masks.sum(dim=0)).clip_(0, 1)
+        if bool((bg_masks.sum() > 1e-4).item()):
+            raise ValueError("Background mask must complete the canvas for this ablation.")
+
+        uncond_embeds, text_embeds = pipeline.get_text_embeds(prompts, negative_prompts)
+        if uncond_embeds.shape[0] != num_masks or text_embeds.shape[0] != num_masks:
+            raise RuntimeError("Text embedding batch does not match the mask batch.")
+        text_embeds = torch.cat([uncond_embeds, text_embeds])
+
+        latent_h = (height + pipeline.vae_scale_factor - 1) // pipeline.vae_scale_factor
+        latent_w = (width + pipeline.vae_scale_factor - 1) // pipeline.vae_scale_factor
+        latent = torch.randn(
+            (1, pipeline.unet.config.in_channels, latent_h, latent_w),
+            dtype=pipeline.dtype,
+            device=pipeline.device,
+        )
+        # The 512x512 protocol produces precisely one view. Supporting tiled
+        # canvases requires translating anchors into every local view and is
+        # deliberately excluded rather than silently doing the wrong thing.
+        views = [(0, latent_h, 0, latent_w)]
+        tile_masks = latent.new_ones((1, 1, latent_h, latent_w))
+        value = torch.zeros_like(latent)
+        count_all = torch.zeros_like(latent)
+        timesteps = [int(value.item()) for value in pipeline.timesteps.detach().cpu()]
+        previous_anchors: List[Tuple[float, float]] | None = None
+        self.step_records = []
+
+        with torch.autocast("cuda"):
+            for step_index, timestep in enumerate(pipeline.timesteps):
+                fg_mask = fg_masks[:, step_index]
+                value.zero_()
+                count_all.zero_()
+
+                if step_index == 0:
+                    selection_source = "baseline_bbox_bootstrap"
+                    selected_points: List[Tuple[float, float]] = []
+                    anchor_source_step = None
+                elif mode == "baseline":
+                    selection_source = "none"
+                    selected_points = []
+                    anchor_source_step = None
+                elif mode == "bbox_control":
+                    selection_source = "bbox_center"
+                    selected_points = []
+                    anchor_source_step = None
+                else:
+                    if previous_anchors is None:
+                        raise RuntimeError("No previous-step anchors are available for Semantic Anchor centering.")
+                    selection_source = "semantic_anchor_previous_step"
+                    selected_points = previous_anchors
+                    anchor_source_step = step_index - 1
+
+                for view_index, (h_start, h_end, w_start, w_end) in enumerate(views):
+                    fg_mask_view = fg_mask[..., h_start:h_end, w_start:w_end]
+                    latent_view = latent[..., h_start:h_end, w_start:w_end].repeat(num_masks, 1, 1, 1)
+
+                    if step_index == 0:
+                        # Exact baseline bootstrap path, including white latent,
+                        # bbox centering, reverse centering and leakage removal.
+                        white = pipeline.get_white_background(height, width)[..., h_start:h_end, w_start:w_end]
+                        bg_latent = latent_view[:1]
+                        mix_ratio = min(
+                            1,
+                            # Keep the baseline attribute spelling: the original
+                            # constructor exposes ``default_boostrap_mix_steps``.
+                            max(0, pipeline.default_boostrap_mix_steps - step_index),
+                        )
+                        bg_latent = mix_ratio * white + (1.0 - mix_ratio) * bg_latent
+                        bg_latent = pipeline.scheduler_add_noise(bg_latent, None, step_index)
+                        latent_view = (1 - fg_mask_view) * bg_latent + fg_mask_view * latent_view
+                        from util import shift_to_mask_bbox_center
+                        latent_view = shift_to_mask_bbox_center(latent_view, fg_mask_view, reverse=True)
+                    elif mode == "bbox_control":
+                        from util import shift_to_mask_bbox_center
+                        # The first entry is the background mask; only actual
+                        # object regions receive repeated geometric centering.
+                        foreground_latent = shift_to_mask_bbox_center(latent_view[1:], fg_mask_view[1:], reverse=True)
+                        latent_view = torch.cat([latent_view[:1], foreground_latent], dim=0)
+                    elif mode == "semantic_anchor":
+                        foreground_latent = _shift_to_reference_points(
+                            latent_view[1:],
+                            selected_points,
+                            image_size=self.image_size,
+                            reverse=False,
+                        )
+                        latent_view = torch.cat([latent_view[:1], foreground_latent], dim=0)
+
+                    noise_pred = pipeline.unet(
+                        torch.cat([latent_view] * 2), timestep, encoder_hidden_states=text_embeds
+                    )["sample"]
+                    noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    latent_view = pipeline.scheduler_step(noise_pred, step_index, latent_view)
+
+                    if step_index == 0:
+                        from util import shift_to_mask_bbox_center
+                        latent_view = shift_to_mask_bbox_center(latent_view, fg_mask_view)
+                        leak = (latent_view - bg_latent).pow(2).mean(dim=1, keepdim=True)
+                        leak_sigmoid = torch.sigmoid(leak / pipeline.default_bootstrap_leak_sensitivity) * 2 - 1
+                        fg_mask_view = fg_mask_view * leak_sigmoid
+                    elif mode == "bbox_control":
+                        from util import shift_to_mask_bbox_center
+                        foreground_latent = shift_to_mask_bbox_center(latent_view[1:], fg_mask_view[1:])
+                        latent_view = torch.cat([latent_view[:1], foreground_latent], dim=0)
+                    elif mode == "semantic_anchor":
+                        foreground_latent = _shift_to_reference_points(
+                            latent_view[1:],
+                            selected_points,
+                            image_size=self.image_size,
+                            reverse=True,
+                        )
+                        latent_view = torch.cat([latent_view[:1], foreground_latent], dim=0)
+
+                    fg_mask_view = fg_mask_view * tile_masks[:, view_index : view_index + 1, h_start:h_end, w_start:w_end]
+                    value[..., h_start:h_end, w_start:w_end] += (fg_mask_view * latent_view).sum(dim=0, keepdim=True)
+                    count_all[..., h_start:h_end, w_start:w_end] += fg_mask_view.sum(dim=0, keepdim=True)
+
+                latent = torch.where(count_all > 0, value / count_all, value)
+
+                # The map for this step is captured by the UNet above. It is
+                # stored now and used only at the next iteration.
+                current_anchors = self._anchors_from_current_step(
+                    int(timestep.item()), foreground_masks
+                )
+                self.step_records.append(
+                    SemanticAnchorRuntimeStep(
+                        step_index=step_index,
+                        timestep=timesteps[step_index],
+                        selection_source=selection_source,
+                        anchor_source_step_index=anchor_source_step,
+                        anchor_source_timestep=(timesteps[anchor_source_step] if anchor_source_step is not None else None),
+                        points_xy=selected_points,
+                    )
+                )
+                previous_anchors = current_anchors
+
+                if step_index < len(pipeline.timesteps) - 1:
+                    latent = pipeline.scheduler_add_noise(latent, None, step_index + 1)
+
+        image = pipeline.decode_latents(latent.to(dtype=pipeline.dtype))[0]
+        from torchvision import transforms as T
+        return T.ToPILImage()(image), list(self.step_records)
 
 
 def _mask_geometry(mask: torch.Tensor) -> Dict[str, float]:
