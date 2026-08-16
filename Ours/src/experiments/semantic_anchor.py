@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from math import isqrt
+from math import ceil, isqrt
 from typing import Dict, Iterable, List, Literal, Mapping, MutableMapping, Sequence, Tuple
 
 import torch
@@ -355,6 +355,7 @@ class SemanticAnchorRuntimeStep:
     selection_source: str
     anchor_source_step_index: int | None
     anchor_source_timestep: int | None
+    anchor_strategy: str
     points_xy: List[Tuple[float, float]]
 
 
@@ -407,7 +408,9 @@ class SemanticAnchorRuntime:
     * step 0 uses the baseline bbox-centering bootstrap exactly;
     * later steps either use no extra centering (``baseline``), bbox centers
       again (``bbox_control``), or the masked attention anchor captured at the
-      immediately preceding step (``semantic_anchor``).
+      immediately preceding step (``semantic_anchor``), or the attention-
+      projected centroid of its strongest in-mask pixels
+      (``semantic_topk_anchor``).
 
     The delayed use of attention is causally valid: the map from step ``i`` is
     produced by that step's UNet, therefore it can first be used at ``i + 1``.
@@ -430,6 +433,9 @@ class SemanticAnchorRuntime:
         self,
         timestep: int,
         foreground_masks: torch.Tensor,
+        *,
+        strategy: Literal["argmax", "topk_projected_centroid"],
+        topk_percent: float,
     ) -> List[Tuple[float, float]]:
         maps = aggregate_attention_maps(self.attention_capture.maps, self.image_size)
         anchors: List[Tuple[float, float]] = []
@@ -439,8 +445,20 @@ class SemanticAnchorRuntime:
                 raise RuntimeError(
                     f"Missing cross-attention map for timestep={timestep}, region={region_index}."
                 )
-            measurement = compute_anchor_measurements(maps[key], mask.cpu())
-            anchors.append((float(measurement["anchor_x"]), float(measurement["anchor_y"])))
+            measurement = compute_anchor_measurements(
+                maps[key], mask.cpu(), topk_percent=topk_percent
+            )
+            if strategy == "argmax":
+                anchors.append(
+                    (float(measurement["anchor_x"]), float(measurement["anchor_y"]))
+                )
+            else:
+                anchors.append(
+                    (
+                        float(measurement["topk_anchor_x"]),
+                        float(measurement["topk_anchor_y"]),
+                    )
+                )
         return anchors
 
     @torch.no_grad()
@@ -451,8 +469,9 @@ class SemanticAnchorRuntime:
         negative_prompts: Sequence[str],
         masks: torch.Tensor,
         foreground_masks: torch.Tensor,
-        mode: Literal["baseline", "bbox_control", "semantic_anchor"],
+        mode: Literal["baseline", "bbox_control", "semantic_anchor", "semantic_topk_anchor"],
         bootstrap_steps: int = 1,
+        topk_percent: float = 10.0,
         mask_stds: float | Sequence[float] | None = None,
         mask_strengths: float | Sequence[float] | None = None,
         preprocess_mask_cover_alpha: float | None = None,
@@ -467,8 +486,10 @@ class SemanticAnchorRuntime:
         the ablation and remain available through the unmodified baseline.
         """
 
-        if mode not in {"baseline", "bbox_control", "semantic_anchor"}:
+        if mode not in {"baseline", "bbox_control", "semantic_anchor", "semantic_topk_anchor"}:
             raise ValueError(f"Unknown mode: {mode}")
+        if not 0.0 < topk_percent <= 100.0:
+            raise ValueError("topk_percent must be in the interval (0, 100].")
         if len(prompts) != len(negative_prompts) or len(prompts) != int(masks.shape[0]):
             raise ValueError("The experiment requires exactly one prompt and negative prompt per mask.")
         if int(masks.shape[0]) != int(foreground_masks.shape[0]) + 1:
@@ -506,6 +527,11 @@ class SemanticAnchorRuntime:
         bg_masks = (1 - fg_masks.sum(dim=0)).clip_(0, 1)
         if bool((bg_masks.sum() > 1e-4).item()):
             raise ValueError("Background mask must complete the canvas for this ablation.")
+
+        # Keep the baseline RNG order: its white VAE latent is created before
+        # the initial diffusion noise. VAE latent sampling consumes randomness,
+        # so constructing it later would invalidate same-seed parity checks.
+        white_bootstrap = pipeline.get_white_background(height, width)
 
         uncond_embeds, text_embeds = pipeline.get_text_embeds(prompts, negative_prompts)
         if uncond_embeds.shape[0] != num_masks or text_embeds.shape[0] != num_masks:
@@ -551,7 +577,11 @@ class SemanticAnchorRuntime:
                 else:
                     if previous_anchors is None:
                         raise RuntimeError("No previous-step anchors are available for Semantic Anchor centering.")
-                    selection_source = "semantic_anchor_previous_step"
+                    selection_source = (
+                        "semantic_topk_attention_previous_step"
+                        if mode == "semantic_topk_anchor"
+                        else "semantic_anchor_previous_step"
+                    )
                     selected_points = previous_anchors
                     anchor_source_step = step_index - 1
 
@@ -562,7 +592,7 @@ class SemanticAnchorRuntime:
                     if step_index == 0:
                         # Exact baseline bootstrap path, including white latent,
                         # bbox centering, reverse centering and leakage removal.
-                        white = pipeline.get_white_background(height, width)[..., h_start:h_end, w_start:w_end]
+                        white = white_bootstrap[..., h_start:h_end, w_start:w_end]
                         bg_latent = latent_view[:1]
                         mix_ratio = min(
                             1,
@@ -581,7 +611,7 @@ class SemanticAnchorRuntime:
                         # object regions receive repeated geometric centering.
                         foreground_latent = shift_to_mask_bbox_center(latent_view[1:], fg_mask_view[1:], reverse=True)
                         latent_view = torch.cat([latent_view[:1], foreground_latent], dim=0)
-                    elif mode == "semantic_anchor":
+                    elif mode in {"semantic_anchor", "semantic_topk_anchor"}:
                         foreground_latent = _shift_to_reference_points(
                             latent_view[1:],
                             selected_points,
@@ -607,7 +637,7 @@ class SemanticAnchorRuntime:
                         from util import shift_to_mask_bbox_center
                         foreground_latent = shift_to_mask_bbox_center(latent_view[1:], fg_mask_view[1:])
                         latent_view = torch.cat([latent_view[:1], foreground_latent], dim=0)
-                    elif mode == "semantic_anchor":
+                    elif mode in {"semantic_anchor", "semantic_topk_anchor"}:
                         foreground_latent = _shift_to_reference_points(
                             latent_view[1:],
                             selected_points,
@@ -625,7 +655,10 @@ class SemanticAnchorRuntime:
                 # The map for this step is captured by the UNet above. It is
                 # stored now and used only at the next iteration.
                 current_anchors = self._anchors_from_current_step(
-                    int(timestep.item()), foreground_masks
+                    int(timestep.item()),
+                    foreground_masks,
+                    strategy=("topk_projected_centroid" if mode == "semantic_topk_anchor" else "argmax"),
+                    topk_percent=topk_percent,
                 )
                 self.step_records.append(
                     SemanticAnchorRuntimeStep(
@@ -634,6 +667,7 @@ class SemanticAnchorRuntime:
                         selection_source=selection_source,
                         anchor_source_step_index=anchor_source_step,
                         anchor_source_timestep=(timesteps[anchor_source_step] if anchor_source_step is not None else None),
+                        anchor_strategy=("topk_projected_centroid" if mode == "semantic_topk_anchor" else "argmax"),
                         points_xy=selected_points,
                     )
                 )
@@ -660,8 +694,20 @@ def _mask_geometry(mask: torch.Tensor) -> Dict[str, float]:
     }
 
 
-def compute_anchor_measurements(attention_map: torch.Tensor, mask: torch.Tensor) -> Dict[str, float | bool]:
-    """Compute proposal-faithful ``argmax`` anchor inside a binary mask."""
+def compute_anchor_measurements(
+    attention_map: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    topk_percent: float = 10.0,
+) -> Dict[str, float | bool]:
+    """Measure both the masked argmax and a robust top-k attention anchor.
+
+    The top-k anchor is derived from the centroid of the highest-scoring
+    ``topk_percent`` pixels *inside the object mask*. That continuous center
+    is projected back to its nearest selected pixel before being used as an
+    anchor. The projection matters when separate high-attention islands have
+    a mathematical center in the background.
+    """
 
     attention_map = attention_map.detach().float().cpu()
     mask = mask.squeeze().bool().cpu()
@@ -669,11 +715,32 @@ def compute_anchor_measurements(attention_map: torch.Tensor, mask: torch.Tensor)
         mask = F.interpolate(mask[None, None].float(), size=attention_map.shape, mode="nearest")[0, 0].bool()
     if not mask.any():
         raise ValueError("Mask rong sau khi resize.")
+    if not 0.0 < topk_percent <= 100.0:
+        raise ValueError("topk_percent must be in the interval (0, 100].")
 
     masked_attention = attention_map.masked_fill(~mask, float("-inf"))
     anchor_flat = int(masked_attention.argmax())
     width = int(attention_map.shape[1])
     anchor_y, anchor_x = divmod(anchor_flat, width)
+
+    mask_ys, mask_xs = torch.where(mask)
+    in_mask_attention = attention_map[mask]
+    topk_count = max(1, ceil(in_mask_attention.numel() * topk_percent / 100.0))
+    topk_values, topk_indices = torch.topk(in_mask_attention, k=topk_count)
+    topk_xs = mask_xs[topk_indices].float()
+    topk_ys = mask_ys[topk_indices].float()
+    # This is deliberately an unweighted centroid. The top-k operation has
+    # already selected the semantic region; weighting again would make a
+    # slightly higher single pixel dominate and collapse toward argmax.
+    topk_center_x = float(topk_xs.mean())
+    topk_center_y = float(topk_ys.mean())
+    nearest_topk_pixel = int(
+        ((topk_xs - topk_center_x).pow(2) + (topk_ys - topk_center_y).pow(2)).argmin()
+    )
+    # A point used to move a latent must correspond to a valid object location.
+    # The weighted center itself can lie between disconnected attention islands.
+    topk_anchor_x = float(topk_xs[nearest_topk_pixel])
+    topk_anchor_y = float(topk_ys[nearest_topk_pixel])
 
     global_flat = int(attention_map.argmax())
     global_y, global_x = divmod(global_flat, width)
@@ -688,6 +755,16 @@ def compute_anchor_measurements(attention_map: torch.Tensor, mask: torch.Tensor)
         "anchor_x": float(anchor_x),
         "anchor_y": float(anchor_y),
         "anchor_attention": float(attention_map[anchor_y, anchor_x]),
+        "topk_percent": float(topk_percent),
+        "topk_pixel_count": int(topk_count),
+        "topk_attention_threshold": float(topk_values.min()),
+        "topk_center_x": topk_center_x,
+        "topk_center_y": topk_center_y,
+        "topk_anchor_x": topk_anchor_x,
+        "topk_anchor_y": topk_anchor_y,
+        "topk_anchor_inside_mask": bool(mask[int(topk_anchor_y), int(topk_anchor_x)]),
+        "topk_anchor_attention": float(attention_map[int(topk_anchor_y), int(topk_anchor_x)]),
+        "topk_anchor_attention_mean": float(topk_values.mean()),
         "global_peak_x": float(global_x),
         "global_peak_y": float(global_y),
         "global_peak_inside_mask": bool(mask[global_y, global_x]),
