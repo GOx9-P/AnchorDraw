@@ -359,6 +359,180 @@ class SemanticAnchorRuntimeStep:
     points_xy: List[Tuple[float, float]]
 
 
+@dataclass
+class WeightedMaskRuntimeStep:
+    """Diagnostics for one weighted-mask mixing step.
+
+    The record deliberately describes only the foreground overlap.  The
+    background region and every non-overlapping foreground pixel retain the
+    baseline quantized-mask value, making this a controlled replacement of
+    the *relative* weights only where regions compete.
+    """
+
+    step_index: int
+    timestep: int
+    policy: str
+    overlap_pixel_count: int
+    overlap_ratio: float
+    spatial_sigma_latent: float | None
+    semantic_sigma_by_region: List[float]
+    raw_weight_mean: float | None
+    raw_weight_min: float | None
+    raw_weight_max: float | None
+
+
+def _image_point_to_latent_index(
+    point_xy: Tuple[float, float],
+    *,
+    image_size: Tuple[int, int],
+    latent_size: Tuple[int, int],
+) -> Tuple[int, int]:
+    """Map an image-space point to a valid ``(y, x)`` latent index."""
+
+    image_h, image_w = image_size
+    latent_h, latent_w = latent_size
+    x = round(float(point_xy[0]) * (latent_w - 1) / max(image_w - 1, 1))
+    y = round(float(point_xy[1]) * (latent_h - 1) / max(image_h - 1, 1))
+    return max(0, min(latent_h - 1, y)), max(0, min(latent_w - 1, x))
+
+
+def build_weighted_overlap_masks(
+    masks: torch.Tensor,
+    region_features: torch.Tensor,
+    anchor_points_xy: Sequence[Tuple[float, float]],
+    *,
+    image_size: Tuple[int, int],
+    policy: Literal[
+        "quantized_baseline", "adaptive_bilateral", "spatial_only", "semantic_only"
+    ],
+    spatial_sigma_latent: float = 8.0,
+    semantic_sigma_scale: float = 1.0,
+    epsilon: float = 1e-6,
+) -> Tuple[torch.Tensor, WeightedMaskRuntimeStep]:
+    """Reweight only ambiguous foreground overlap for weighted averaging.
+
+    ``masks`` contains one background region followed by foreground regions.
+    ``region_features`` contains the prior denoised latent for those foreground
+    regions in the same global latent coordinate system.  The output preserves
+    the sum of foreground mask weights at every overlap pixel; it therefore
+    changes *which region wins* there, without changing the total mixing mass.
+    """
+
+    if policy not in {
+        "quantized_baseline",
+        "adaptive_bilateral",
+        "spatial_only",
+        "semantic_only",
+    }:
+        raise ValueError(f"Unknown weighted-mask policy: {policy}")
+    if masks.ndim != 4 or masks.shape[1] != 1:
+        raise ValueError("Expected masks shaped [regions, 1, latent_h, latent_w].")
+    if masks.shape[0] != region_features.shape[0] + 1:
+        raise ValueError("Expected one background mask plus one latent per foreground region.")
+    if len(anchor_points_xy) != region_features.shape[0]:
+        raise ValueError("Expected one semantic anchor for each foreground region.")
+    if spatial_sigma_latent <= 0:
+        raise ValueError("spatial_sigma_latent must be positive.")
+    if semantic_sigma_scale <= 0:
+        raise ValueError("semantic_sigma_scale must be positive.")
+
+    foreground_masks = masks[1:]
+    latent_h, latent_w = foreground_masks.shape[-2:]
+    support = foreground_masks > epsilon
+    overlap = support.sum(dim=0, keepdim=True) >= 2
+    overlap_pixel_count = int(overlap.sum().item())
+    overlap_ratio = float(overlap.float().mean().item())
+
+    def record(
+        *,
+        sigma_values: List[float],
+        weights: torch.Tensor | None,
+    ) -> WeightedMaskRuntimeStep:
+        if weights is None:
+            raw_mean = raw_min = raw_max = None
+        else:
+            active = weights[support]
+            raw_mean = float(active.mean().item()) if active.numel() else 0.0
+            raw_min = float(active.min().item()) if active.numel() else 0.0
+            raw_max = float(active.max().item()) if active.numel() else 0.0
+        return WeightedMaskRuntimeStep(
+            step_index=-1,
+            timestep=-1,
+            policy=policy,
+            overlap_pixel_count=overlap_pixel_count,
+            overlap_ratio=overlap_ratio,
+            spatial_sigma_latent=(None if policy in {"quantized_baseline", "semantic_only"} else float(spatial_sigma_latent)),
+            semantic_sigma_by_region=sigma_values,
+            raw_weight_mean=raw_mean,
+            raw_weight_min=raw_min,
+            raw_weight_max=raw_max,
+        )
+
+    # WM-00 is exactly the existing quantized-mask mixing path.
+    if policy == "quantized_baseline" or overlap_pixel_count == 0:
+        return masks, record(sigma_values=[], weights=None)
+
+    # Calculate similarity factors in float32.  The denoising loop may run in
+    # float16, but feature distances and exponentials are needlessly fragile at
+    # that precision; the result is cast back before latent mixing.
+    ys = torch.arange(latent_h, device=masks.device, dtype=torch.float32).view(1, 1, latent_h, 1)
+    xs = torch.arange(latent_w, device=masks.device, dtype=torch.float32).view(1, 1, 1, latent_w)
+    raw_weights = foreground_masks.clone()
+    sigma_values: List[float] = []
+
+    for region_index, point_xy in enumerate(anchor_points_xy):
+        weight = foreground_masks[region_index : region_index + 1]
+        if policy != "semantic_only":
+            anchor_y, anchor_x = _image_point_to_latent_index(
+                point_xy,
+                image_size=image_size,
+                latent_size=(latent_h, latent_w),
+            )
+            distance_sq = (ys - anchor_y).pow(2) + (xs - anchor_x).pow(2)
+            spatial_factor = torch.exp(-distance_sq / (2.0 * spatial_sigma_latent**2))
+            weight = weight * spatial_factor.to(dtype=weight.dtype)
+
+        if policy != "spatial_only":
+            features = region_features[region_index].float()
+            active = support[region_index, 0]
+            active_features = features[:, active].transpose(0, 1)
+            if active_features.numel() == 0:
+                # A region can disappear after quantization at an early step.
+                # There is no semantic evidence to apply in that case, so leave
+                # its spatial weighting unchanged instead of producing NaN.
+                sigma_values.append(0.0)
+                raw_weights[region_index : region_index + 1] = weight
+                continue
+            feature_mean = active_features.mean(dim=0, keepdim=True)
+            sigma_semantic = torch.sqrt(
+                (active_features - feature_mean).pow(2).sum(dim=1).mean()
+            ).clamp_min(epsilon) * semantic_sigma_scale
+            sigma_values.append(float(sigma_semantic.detach().float().item()))
+            anchor_y, anchor_x = _image_point_to_latent_index(
+                point_xy,
+                image_size=image_size,
+                latent_size=(latent_h, latent_w),
+            )
+            anchor_feature = features[:, anchor_y, anchor_x].view(-1, 1, 1)
+            feature_distance_sq = (features - anchor_feature).pow(2).sum(dim=0, keepdim=True)
+            semantic_factor = torch.exp(-feature_distance_sq / (2.0 * sigma_semantic**2))
+            weight = weight * semantic_factor.to(dtype=weight.dtype)
+
+        raw_weights[region_index : region_index + 1] = weight
+
+    # Preserve the baseline total foreground mass at a pixel.  This avoids a
+    # hidden background-strength change and makes the ablation solely about
+    # conflict resolution among overlapping object regions.
+    original_sum = foreground_masks.sum(dim=0, keepdim=True)
+    raw_sum = raw_weights.sum(dim=0, keepdim=True).clamp_min(epsilon)
+    reweighted = raw_weights / raw_sum * original_sum
+    effective_foreground = torch.where(overlap.expand_as(foreground_masks), reweighted, foreground_masks)
+    return torch.cat([masks[:1], effective_foreground], dim=0), record(
+        sigma_values=sigma_values,
+        weights=raw_weights,
+    )
+
+
 def _shift_to_reference_points(
     latents: torch.Tensor,
     points_xy: Sequence[Tuple[float, float]],
@@ -428,6 +602,10 @@ class SemanticAnchorRuntime:
         self.attention_capture = attention_capture
         self.image_size = image_size
         self.step_records: List[SemanticAnchorRuntimeStep] = []
+        self.weight_records: List[WeightedMaskRuntimeStep] = []
+        # Optional CPU copies for qualitative inspection. They are disabled for
+        # full runs unless a notebook explicitly requests artifacts.
+        self.weight_masks: List[torch.Tensor | None] = []
 
     def _anchors_from_current_step(
         self,
@@ -470,8 +648,14 @@ class SemanticAnchorRuntime:
         masks: torch.Tensor,
         foreground_masks: torch.Tensor,
         mode: Literal["baseline", "bbox_control", "semantic_anchor", "semantic_topk_anchor"],
+        weight_policy: Literal[
+            "quantized_baseline", "adaptive_bilateral", "spatial_only", "semantic_only"
+        ] = "quantized_baseline",
         bootstrap_steps: int = 1,
         topk_percent: float = 10.0,
+        spatial_sigma_latent: float = 8.0,
+        semantic_sigma_scale: float = 1.0,
+        capture_weight_masks: bool = False,
         mask_stds: float | Sequence[float] | None = None,
         mask_strengths: float | Sequence[float] | None = None,
         preprocess_mask_cover_alpha: float | None = None,
@@ -488,6 +672,13 @@ class SemanticAnchorRuntime:
 
         if mode not in {"baseline", "bbox_control", "semantic_anchor", "semantic_topk_anchor"}:
             raise ValueError(f"Unknown mode: {mode}")
+        if weight_policy not in {
+            "quantized_baseline",
+            "adaptive_bilateral",
+            "spatial_only",
+            "semantic_only",
+        }:
+            raise ValueError(f"Unknown weighted-mask policy: {weight_policy}")
         if not 0.0 < topk_percent <= 100.0:
             raise ValueError("topk_percent must be in the interval (0, 100].")
         if len(prompts) != len(negative_prompts) or len(prompts) != int(masks.shape[0]):
@@ -554,13 +745,49 @@ class SemanticAnchorRuntime:
         count_all = torch.zeros_like(latent)
         timesteps = [int(value.item()) for value in pipeline.timesteps.detach().cpu()]
         previous_anchors: List[Tuple[float, float]] | None = None
+        previous_weight_anchors: List[Tuple[float, float]] | None = None
+        previous_region_features: torch.Tensor | None = None
         self.step_records = []
+        self.weight_records = []
+        self.weight_masks = []
 
         with torch.autocast("cuda"):
             for step_index, timestep in enumerate(pipeline.timesteps):
                 fg_mask = fg_masks[:, step_index]
+                weighting_record: WeightedMaskRuntimeStep | None = None
+                if step_index > 0 and weight_policy != "quantized_baseline":
+                    if previous_weight_anchors is None or previous_region_features is None:
+                        raise RuntimeError("Weighted masking requires previous-step anchors and region latents.")
+                    fg_mask, weighting_record = build_weighted_overlap_masks(
+                        fg_mask,
+                        previous_region_features,
+                        previous_weight_anchors,
+                        image_size=self.image_size,
+                        policy=weight_policy,
+                        spatial_sigma_latent=spatial_sigma_latent,
+                        semantic_sigma_scale=semantic_sigma_scale,
+                    )
+                    weighting_record.step_index = step_index
+                    weighting_record.timestep = timesteps[step_index]
+                else:
+                    weighting_record = WeightedMaskRuntimeStep(
+                        step_index=step_index,
+                        timestep=timesteps[step_index],
+                        policy=("bootstrap_baseline" if step_index == 0 else weight_policy),
+                        overlap_pixel_count=0,
+                        overlap_ratio=0.0,
+                        spatial_sigma_latent=None,
+                        semantic_sigma_by_region=[],
+                        raw_weight_mean=None,
+                        raw_weight_min=None,
+                        raw_weight_max=None,
+                    )
+                self.weight_masks.append(
+                    fg_mask[1:].detach().float().cpu().clone() if capture_weight_masks else None
+                )
                 value.zero_()
                 count_all.zero_()
+                current_region_features: torch.Tensor | None = None
 
                 if step_index == 0:
                     selection_source = "baseline_bbox_bootstrap"
@@ -646,6 +873,15 @@ class SemanticAnchorRuntime:
                         )
                         latent_view = torch.cat([latent_view[:1], foreground_latent], dim=0)
 
+                    # ``z_i`` for the next diffusion step is the denoised,
+                    # per-region latent after any temporary centering has been
+                    # reversed.  Capturing it earlier would compare features
+                    # in different coordinate frames and would not describe
+                    # the content available to the following step.
+                    if current_region_features is not None:
+                        raise RuntimeError("Semantic Anchor runtime currently supports one latent view only.")
+                    current_region_features = latent_view[1:].detach().clone()
+
                     fg_mask_view = fg_mask_view * tile_masks[:, view_index : view_index + 1, h_start:h_end, w_start:w_end]
                     value[..., h_start:h_end, w_start:w_end] += (fg_mask_view * latent_view).sum(dim=0, keepdim=True)
                     count_all[..., h_start:h_end, w_start:w_end] += fg_mask_view.sum(dim=0, keepdim=True)
@@ -660,6 +896,19 @@ class SemanticAnchorRuntime:
                     strategy=("topk_projected_centroid" if mode == "semantic_topk_anchor" else "argmax"),
                     topk_percent=topk_percent,
                 )
+                if mode == "bbox_control":
+                    # WM-01 is the geometric control: its spatial Gaussian is
+                    # centered at the same bbox-center reference used by the
+                    # repeated-centering branch, not at an attention argmax.
+                    current_weight_anchors = [
+                        (
+                            _mask_geometry(mask.cpu())["bbox_center_x"],
+                            _mask_geometry(mask.cpu())["bbox_center_y"],
+                        )
+                        for mask in foreground_masks
+                    ]
+                else:
+                    current_weight_anchors = current_anchors
                 self.step_records.append(
                     SemanticAnchorRuntimeStep(
                         step_index=step_index,
@@ -672,6 +921,11 @@ class SemanticAnchorRuntime:
                     )
                 )
                 previous_anchors = current_anchors
+                previous_weight_anchors = current_weight_anchors
+                if current_region_features is None:
+                    raise RuntimeError("Failed to retain per-region latent features for weighted masking.")
+                previous_region_features = current_region_features
+                self.weight_records.append(weighting_record)
 
                 if step_index < len(pipeline.timesteps) - 1:
                     latent = pipeline.scheduler_add_noise(latent, None, step_index + 1)
