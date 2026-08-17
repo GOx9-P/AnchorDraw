@@ -665,9 +665,13 @@ class SemanticAnchorRuntime:
         """Generate one image using the controlled centering ablation.
 
         This intentionally supports the manifest protocol used by the
-        experiment: a tensor of mutually aligned background+foreground masks
-        and one prompt per mask.  Background image/BLIP branches are outside
-        the ablation and remain available through the unmodified baseline.
+        experiment: one background prompt followed by foreground prompts.
+        ``masks`` carries the corresponding background+foreground layout for
+        bookkeeping, but mask preprocessing follows the original
+        ``SemanticDrawPipeline``: only foreground masks are preprocessed and
+        the background mask is reconstructed as their complement at every
+        timestep.  Preprocessing a supplied background mask independently
+        would blur/quantize it separately and create artificial coverage gaps.
         """
 
         if mode not in {"baseline", "bbox_control", "semantic_anchor", "semantic_topk_anchor"}:
@@ -703,21 +707,30 @@ class SemanticAnchorRuntime:
         if preprocess_mask_cover_alpha is None:
             preprocess_mask_cover_alpha = pipeline.default_preprocess_mask_cover_alpha
 
-        fg_masks, _, _ = pipeline.process_mask(
-            masks,
-            mask_strengths,
-            mask_stds,
+        def foreground_parameter(value):
+            """Drop the bookkeeping background value from per-region settings."""
+            if isinstance(value, torch.Tensor) and value.ndim == 1 and value.numel() == num_masks:
+                return value[1:]
+            if isinstance(value, (list, tuple)) and len(value) == num_masks:
+                return value[1:]
+            return value
+
+        processed_foreground_masks, _, _ = pipeline.process_mask(
+            foreground_masks.to(device=pipeline.device, dtype=torch.float32),
+            foreground_parameter(mask_strengths),
+            foreground_parameter(mask_stds),
             height=height,
             width=width,
             use_boolean_mask=use_boolean_mask,
             timesteps=pipeline.timesteps,
             preprocess_mask_cover_alpha=preprocess_mask_cover_alpha,
         )
-        # The manifest already provides a background region, so no external
-        # background latent is mixed in this controlled experiment.
-        bg_masks = (1 - fg_masks.sum(dim=0)).clip_(0, 1)
-        if bool((bg_masks.sum() > 1e-4).item()):
-            raise ValueError("Background mask must complete the canvas for this ablation.")
+        # Match the baseline ``background_prompt`` branch: its background
+        # region is computed *after* foreground mask processing.  This makes
+        # the regions cover the canvas exactly, even after Gaussian blur and
+        # per-timestep quantization.
+        bg_masks = (1 - processed_foreground_masks.sum(dim=0)).clip_(0, 1)
+        fg_masks = torch.cat([bg_masks.unsqueeze(0), processed_foreground_masks], dim=0)
 
         # Keep the baseline RNG order: its white VAE latent is created before
         # the initial diffusion noise. VAE latent sampling consumes randomness,
