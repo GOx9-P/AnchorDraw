@@ -331,7 +331,9 @@ def aggregate_attention_maps(
     for key, layer_maps in captured_maps.items():
         resized = []
         for layer_map in layer_maps:
-            values = layer_map.values[None, None]
+            # Keep diagnostic tensors off the GPU.  Per-layer inspection can
+            # otherwise retain many full-resolution maps until the sample ends.
+            values = layer_map.values.detach().float().cpu()[None, None]
             values = F.interpolate(values, size=output_size, mode="bilinear", align_corners=False)[0, 0]
             resized.append(values)
         if resized:
@@ -339,6 +341,45 @@ def aggregate_attention_maps(
             result = (result - result.min()) / (result.max() - result.min()).clamp_min(1e-8)
             aggregated[key] = result
     return aggregated
+
+
+def resize_layer_attention_maps(
+    captured_maps: Mapping[Tuple[int, int], Iterable[CapturedLayerMap]],
+    output_size: Tuple[int, int],
+) -> Dict[Tuple[int, int], List[CapturedLayerMap]]:
+    """Resize captured cross-attention maps without averaging their layers.
+
+    ``aggregate_attention_maps`` is useful for one compact, representative
+    heatmap, but it intentionally removes the distinction between U-Net
+    cross-attention layers.  This helper keeps that distinction so an
+    experiment can compare the anchor selected by each individual ``attn2``
+    layer at a particular denoising timestep.
+
+    Each map is normalized independently after interpolation.  Therefore its
+    values describe the spatial preference *within that layer*, not an
+    absolute attention magnitude comparable across different layers.
+    """
+
+    resized_maps: Dict[Tuple[int, int], List[CapturedLayerMap]] = {}
+    for key, layer_maps in captured_maps.items():
+        resized_layers: List[CapturedLayerMap] = []
+        for layer_map in layer_maps:
+            # Analysis artifacts must live on CPU; keeping these maps on CUDA
+            # across layers/steps would retain the U-Net computation graph and
+            # quickly exhaust Colab memory.
+            values = layer_map.values.detach().float().cpu()[None, None]
+            values = F.interpolate(values, size=output_size, mode="bilinear", align_corners=False)[0, 0]
+            values = (values - values.min()) / (values.max() - values.min()).clamp_min(1e-8)
+            resized_layers.append(
+                CapturedLayerMap(
+                    layer_name=layer_map.layer_name,
+                    spatial_size=layer_map.spatial_size,
+                    values=values,
+                )
+            )
+        if resized_layers:
+            resized_maps[key] = resized_layers
+    return resized_maps
 
 
 @dataclass
