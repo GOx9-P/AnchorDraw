@@ -324,11 +324,26 @@ class SemanticLatentStepCapture:
 def aggregate_attention_maps(
     captured_maps: Mapping[Tuple[int, int], Iterable[CapturedLayerMap]],
     output_size: Tuple[int, int],
+    layer_index: int | None = None,
 ) -> Dict[Tuple[int, int], torch.Tensor]:
-    """Resize and average normalized maps from all captured cross-attention layers."""
+    """Resize captured maps, optionally selecting one layer before aggregation.
+
+    ``layer_index=None`` preserves the original behavior and averages all
+    captured cross-attention layers.  When an index is supplied, only that
+    position in the stable ``unet.attn_processors`` capture order is used.
+    This is the runtime path used by per-layer anchor ablations.
+    """
 
     aggregated: Dict[Tuple[int, int], torch.Tensor] = {}
     for key, layer_maps in captured_maps.items():
+        layer_maps = list(layer_maps)
+        if layer_index is not None:
+            if layer_index < 0 or layer_index >= len(layer_maps):
+                raise IndexError(
+                    f"Attention layer index {layer_index} is unavailable for key={key}; "
+                    f"captured {len(layer_maps)} layers."
+                )
+            layer_maps = [layer_maps[layer_index]]
         resized = []
         for layer_map in layer_maps:
             # Keep diagnostic tensors off the GPU.  Per-layer inspection can
@@ -655,8 +670,13 @@ class SemanticAnchorRuntime:
         *,
         strategy: Literal["argmax", "topk_projected_centroid"],
         topk_percent: float,
+        layer_index: int | None = None,
     ) -> List[Tuple[float, float]]:
-        maps = aggregate_attention_maps(self.attention_capture.maps, self.image_size)
+        maps = aggregate_attention_maps(
+            self.attention_capture.maps,
+            self.image_size,
+            layer_index=layer_index,
+        )
         anchors: List[Tuple[float, float]] = []
         for region_index, mask in enumerate(foreground_masks):
             key = (int(timestep), region_index)
@@ -702,6 +722,7 @@ class SemanticAnchorRuntime:
         preprocess_mask_cover_alpha: float | None = None,
         guidance_scale: float | None = None,
         use_boolean_mask: bool = True,
+        attention_layer_index: int | None = None,
     ):
         """Generate one image using the controlled centering ablation.
 
@@ -726,6 +747,8 @@ class SemanticAnchorRuntime:
             raise ValueError(f"Unknown weighted-mask policy: {weight_policy}")
         if not 0.0 < topk_percent <= 100.0:
             raise ValueError("topk_percent must be in the interval (0, 100].")
+        if attention_layer_index is not None and attention_layer_index < 0:
+            raise ValueError("attention_layer_index must be non-negative or None.")
         if len(prompts) != len(negative_prompts) or len(prompts) != int(masks.shape[0]):
             raise ValueError("The experiment requires exactly one prompt and negative prompt per mask.")
         if int(masks.shape[0]) != int(foreground_masks.shape[0]) + 1:
@@ -949,6 +972,7 @@ class SemanticAnchorRuntime:
                     foreground_masks,
                     strategy=("topk_projected_centroid" if mode == "semantic_topk_anchor" else "argmax"),
                     topk_percent=topk_percent,
+                    layer_index=attention_layer_index,
                 )
                 if mode == "bbox_control":
                     # WM-01 is the geometric control: its spatial Gaussian is
