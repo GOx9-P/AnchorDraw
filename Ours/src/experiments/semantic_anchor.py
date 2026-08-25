@@ -325,19 +325,34 @@ def aggregate_attention_maps(
     captured_maps: Mapping[Tuple[int, int], Iterable[CapturedLayerMap]],
     output_size: Tuple[int, int],
     layer_index: int | None = None,
+    layer_name: str | None = None,
 ) -> Dict[Tuple[int, int], torch.Tensor]:
     """Resize captured maps, optionally selecting one layer before aggregation.
 
     ``layer_index=None`` preserves the original behavior and averages all
-    captured cross-attention layers.  When an index is supplied, only that
-    position in the stable ``unet.attn_processors`` capture order is used.
-    This is the runtime path used by per-layer anchor ablations.
+    captured cross-attention layers.  ``layer_name`` is the preferred selector
+    for a per-layer runtime ablation because ``unet.attn_processors`` ordering
+    need not match the order in which layers execute during a forward pass.
+    ``layer_index`` remains available for existing exports, where it refers to
+    the captured forward-pass order.
     """
+
+    if layer_index is not None and layer_name is not None:
+        raise ValueError("Specify either layer_index or layer_name, not both.")
 
     aggregated: Dict[Tuple[int, int], torch.Tensor] = {}
     for key, layer_maps in captured_maps.items():
         layer_maps = list(layer_maps)
-        if layer_index is not None:
+        if layer_name is not None:
+            selected = [layer_map for layer_map in layer_maps if layer_map.layer_name == layer_name]
+            if len(selected) != 1:
+                available = [layer_map.layer_name for layer_map in layer_maps]
+                raise KeyError(
+                    f"Attention layer {layer_name!r} is unavailable for key={key}; "
+                    f"captured layers: {available}."
+                )
+            layer_maps = selected
+        elif layer_index is not None:
             if layer_index < 0 or layer_index >= len(layer_maps):
                 raise IndexError(
                     f"Attention layer index {layer_index} is unavailable for key={key}; "
@@ -671,11 +686,13 @@ class SemanticAnchorRuntime:
         strategy: Literal["argmax", "topk_projected_centroid"],
         topk_percent: float,
         layer_index: int | None = None,
+        layer_name: str | None = None,
     ) -> List[Tuple[float, float]]:
         maps = aggregate_attention_maps(
             self.attention_capture.maps,
             self.image_size,
             layer_index=layer_index,
+            layer_name=layer_name,
         )
         anchors: List[Tuple[float, float]] = []
         for region_index, mask in enumerate(foreground_masks):
@@ -723,6 +740,7 @@ class SemanticAnchorRuntime:
         guidance_scale: float | None = None,
         use_boolean_mask: bool = True,
         attention_layer_index: int | None = None,
+        attention_layer_name: str | None = None,
     ):
         """Generate one image using the controlled centering ablation.
 
@@ -749,6 +767,10 @@ class SemanticAnchorRuntime:
             raise ValueError("topk_percent must be in the interval (0, 100].")
         if attention_layer_index is not None and attention_layer_index < 0:
             raise ValueError("attention_layer_index must be non-negative or None.")
+        if attention_layer_name is not None and not attention_layer_name:
+            raise ValueError("attention_layer_name must be a non-empty string or None.")
+        if attention_layer_index is not None and attention_layer_name is not None:
+            raise ValueError("Specify either attention_layer_index or attention_layer_name, not both.")
         if len(prompts) != len(negative_prompts) or len(prompts) != int(masks.shape[0]):
             raise ValueError("The experiment requires exactly one prompt and negative prompt per mask.")
         if int(masks.shape[0]) != int(foreground_masks.shape[0]) + 1:
@@ -973,6 +995,7 @@ class SemanticAnchorRuntime:
                     strategy=("topk_projected_centroid" if mode == "semantic_topk_anchor" else "argmax"),
                     topk_percent=topk_percent,
                     layer_index=attention_layer_index,
+                    layer_name=attention_layer_name,
                 )
                 if mode == "bbox_control":
                     # WM-01 is the geometric control: its spatial Gaussian is
