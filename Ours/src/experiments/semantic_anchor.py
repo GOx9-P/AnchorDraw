@@ -775,8 +775,8 @@ class SemanticAnchorRuntime:
             raise ValueError("The experiment requires exactly one prompt and negative prompt per mask.")
         if int(masks.shape[0]) != int(foreground_masks.shape[0]) + 1:
             raise ValueError("Expected one background mask followed by foreground masks.")
-        if bootstrap_steps != 1:
-            raise ValueError("This ablation is defined for one baseline bootstrap step only.")
+        if bootstrap_steps < 1 or bootstrap_steps >= len(pipeline.timesteps):
+            raise ValueError(f"bootstrap_steps must be in [1, {len(pipeline.timesteps) - 1}].")
 
         pipeline = self.pipeline
         height, width = self.image_size
@@ -854,7 +854,7 @@ class SemanticAnchorRuntime:
             for step_index, timestep in enumerate(pipeline.timesteps):
                 fg_mask = fg_masks[:, step_index]
                 weighting_record: WeightedMaskRuntimeStep | None = None
-                if step_index > 0 and weight_policy != "quantized_baseline":
+                if step_index >= bootstrap_steps and weight_policy != "quantized_baseline":
                     if previous_weight_anchors is None or previous_region_features is None:
                         raise RuntimeError("Weighted masking requires previous-step anchors and region latents.")
                     fg_mask, weighting_record = build_weighted_overlap_masks(
@@ -872,7 +872,7 @@ class SemanticAnchorRuntime:
                     weighting_record = WeightedMaskRuntimeStep(
                         step_index=step_index,
                         timestep=timesteps[step_index],
-                        policy=("bootstrap_baseline" if step_index == 0 else weight_policy),
+                        policy=("bootstrap_baseline" if step_index < bootstrap_steps else weight_policy),
                         overlap_pixel_count=0,
                         overlap_ratio=0.0,
                         spatial_sigma_latent=None,
@@ -888,7 +888,7 @@ class SemanticAnchorRuntime:
                 count_all.zero_()
                 current_region_features: torch.Tensor | None = None
 
-                if step_index == 0:
+                if step_index < bootstrap_steps:
                     selection_source = "baseline_bbox_bootstrap"
                     selected_points: List[Tuple[float, float]] = []
                     anchor_source_step = None
@@ -915,7 +915,7 @@ class SemanticAnchorRuntime:
                     fg_mask_view = fg_mask[..., h_start:h_end, w_start:w_end]
                     latent_view = latent[..., h_start:h_end, w_start:w_end].repeat(num_masks, 1, 1, 1)
 
-                    if step_index == 0:
+                    if step_index < bootstrap_steps:
                         # Exact baseline bootstrap path, including white latent,
                         # bbox centering, reverse centering and leakage removal.
                         white = white_bootstrap[..., h_start:h_end, w_start:w_end]
@@ -953,7 +953,7 @@ class SemanticAnchorRuntime:
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
                     latent_view = pipeline.scheduler_step(noise_pred, step_index, latent_view)
 
-                    if step_index == 0:
+                    if step_index < bootstrap_steps:
                         from util import shift_to_mask_bbox_center
                         latent_view = shift_to_mask_bbox_center(latent_view, fg_mask_view)
                         leak = (latent_view - bg_latent).pow(2).mean(dim=1, keepdim=True)
