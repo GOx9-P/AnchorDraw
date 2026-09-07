@@ -775,10 +775,11 @@ class SemanticAnchorRuntime:
             raise ValueError("The experiment requires exactly one prompt and negative prompt per mask.")
         if int(masks.shape[0]) != int(foreground_masks.shape[0]) + 1:
             raise ValueError("Expected one background mask followed by foreground masks.")
+
+        pipeline = self.pipeline
         if bootstrap_steps < 1 or bootstrap_steps >= len(pipeline.timesteps):
             raise ValueError(f"bootstrap_steps must be in [1, {len(pipeline.timesteps) - 1}].")
 
-        pipeline = self.pipeline
         height, width = self.image_size
         if height > 512 or width > 512:
             raise ValueError("Semantic Anchor SD1.5 ablation currently validates the 512x512 protocol only.")
