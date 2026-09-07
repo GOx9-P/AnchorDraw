@@ -990,13 +990,17 @@ class SemanticAnchorRuntime:
 
                 # The map for this step is captured by the UNet above. It is
                 # stored now and used only at the next iteration.
+                anchor_kwargs = {}
+                if attention_layer_name is not None:
+                    anchor_kwargs["layer_name"] = attention_layer_name
+                if attention_layer_index is not None:
+                    anchor_kwargs["layer_index"] = attention_layer_index
                 current_anchors = self._anchors_from_current_step(
                     int(timestep.item()),
                     foreground_masks,
                     strategy=("topk_projected_centroid" if mode == "semantic_topk_anchor" else "argmax"),
                     topk_percent=topk_percent,
-                    layer_index=attention_layer_index,
-                    layer_name=attention_layer_name,
+                    **anchor_kwargs,
                 )
                 if mode == "bbox_control":
                     # WM-01 is the geometric control: its spatial Gaussian is
