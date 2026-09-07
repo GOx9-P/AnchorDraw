@@ -6,7 +6,7 @@
 | `semantic_anchor_sd15_hypersd_smoke8_colab.ipynb` | Chạy cùng phép kiểm chứng bằng SD1.5 + Hyper-SD 4-step để so sánh với LCM; hỗ trợ cả `smoke8` và `full1073`. |
 | `semantic_anchor_sd15_lcm_anchor_runtime_smoke8_colab.ipynb` | Ablation nhân quả: so sánh baseline, bbox-control, raw attention argmax và top-k attention center để centering ở các step sau bootstrap; mặc định `smoke8`, hỗ trợ `full1073`. |
 | `semantic_anchor_sd15_lcm_weighted_mask_all_ids_colab.ipynb` | Ablation Weighted Mask `WM-00` đến `WM-05` cho SemanticDraw SD1.5 + LCM. Cùng input/seed, chỉ thay reference và cách phân bổ trọng số ở pixel foreground overlap; mặc định `smoke8`, hỗ trợ `full1073`. |
-| `semantic_anchor_sd15_lcm_spatial_sigma_sweep_colab.ipynb` | Hyperparameter Sweep cho tham số $\sigma_D$ (`spatial_sigma_latent`) của phương pháp `WM-02` (Argmax + Adaptive Bilateral) kết hợp `Bootstrap=2` trên Layer `L04` (16x16) với 8 samples x 10 giá trị $\sigma_D$ (80 ảnh) kèm contact sheet so sánh trực quan ($2 \times 5$). |
+| `semantic_anchor_sd15_lcm_spatial_sigma_sweep_colab.ipynb` | Hyperparameter Sweep cho tham số $\sigma_D$ (`spatial_sigma_latent`) của phương pháp `WM-03` (Top-k + Adaptive Bilateral) kết hợp `Bootstrap=2` trên Layer `L04` (16x16) với 8 samples x 10 giá trị $\sigma_D$ (80 ảnh) kèm contact sheet so sánh trực quan ($2 \times 5$). |
 
 Notebook LCM mặc định dùng `RUN_PROFILE = "full1073"`; notebook Hyper-SD mặc
 định dùng `RUN_PROFILE = "smoke8"` để kiểm tra nhanh 8 mẫu trước khi mở rộng.
