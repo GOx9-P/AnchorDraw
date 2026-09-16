@@ -540,7 +540,7 @@ def build_weighted_overlap_masks(
         )
 
     # WM-00 is exactly the existing quantized-mask mixing path.
-    if policy == "quantized_baseline" or overlap_pixel_count == 0:
+    if policy == "quantized_baseline" or not support.any():
         return masks, record(sigma_values=[], weights=None)
 
     # Calculate similarity factors in float32.  The denoising loop may run in
@@ -549,10 +549,12 @@ def build_weighted_overlap_masks(
     ys = torch.arange(latent_h, device=masks.device, dtype=torch.float32).view(1, 1, latent_h, 1)
     xs = torch.arange(latent_w, device=masks.device, dtype=torch.float32).view(1, 1, 1, latent_w)
     raw_weights = foreground_masks.clone()
+    bilateral_factors = torch.ones_like(foreground_masks)
     sigma_values: List[float] = []
 
     for region_index, point_xy in enumerate(anchor_points_xy):
         weight = foreground_masks[region_index : region_index + 1]
+        region_factor = torch.ones((1, 1, latent_h, latent_w), device=masks.device, dtype=torch.float32)
         if policy != "semantic_only":
             anchor_y, anchor_x = _image_point_to_latent_index(
                 point_xy,
@@ -561,7 +563,7 @@ def build_weighted_overlap_masks(
             )
             distance_sq = (ys - anchor_y).pow(2) + (xs - anchor_x).pow(2)
             spatial_factor = torch.exp(-distance_sq / (2.0 * spatial_sigma_latent**2))
-            weight = weight * spatial_factor.to(dtype=weight.dtype)
+            region_factor = region_factor * spatial_factor
 
         if policy != "spatial_only":
             features = region_features[region_index].float()
@@ -572,7 +574,8 @@ def build_weighted_overlap_masks(
                 # There is no semantic evidence to apply in that case, so leave
                 # its spatial weighting unchanged instead of producing NaN.
                 sigma_values.append(0.0)
-                raw_weights[region_index : region_index + 1] = weight
+                bilateral_factors[region_index : region_index + 1] = region_factor.to(dtype=foreground_masks.dtype)
+                raw_weights[region_index : region_index + 1] = weight * bilateral_factors[region_index : region_index + 1]
                 continue
             feature_mean = active_features.mean(dim=0, keepdim=True)
             sigma_semantic = torch.sqrt(
@@ -587,18 +590,45 @@ def build_weighted_overlap_masks(
             anchor_feature = features[:, anchor_y, anchor_x].view(-1, 1, 1)
             feature_distance_sq = (features - anchor_feature).pow(2).sum(dim=0, keepdim=True)
             semantic_factor = torch.exp(-feature_distance_sq / (2.0 * sigma_semantic**2))
-            weight = weight * semantic_factor.to(dtype=weight.dtype)
+            region_factor = region_factor * semantic_factor
 
-        raw_weights[region_index : region_index + 1] = weight
+        bilateral_factors[region_index : region_index + 1] = region_factor.to(dtype=foreground_masks.dtype)
+        raw_weights[region_index : region_index + 1] = weight * bilateral_factors[region_index : region_index + 1]
 
-    # Preserve the baseline total foreground mass at a pixel.  This avoids a
-    # hidden background-strength change and makes the ablation solely about
-    # conflict resolution among overlapping object regions.
+    # 1. Reweight foreground-foreground overlap to resolve region competition.
     original_sum = foreground_masks.sum(dim=0, keepdim=True)
     raw_sum = raw_weights.sum(dim=0, keepdim=True).clamp_min(epsilon)
-    reweighted = raw_weights / raw_sum * original_sum
-    effective_foreground = torch.where(overlap.expand_as(foreground_masks), reweighted, foreground_masks)
-    return torch.cat([masks[:1], effective_foreground], dim=0), record(
+    reweighted_overlap = raw_weights / raw_sum * original_sum.clamp_max(1.0)
+
+    # 2. Smooth boundary transition between foreground and background.
+    # Detect perimeter band where foreground transitions into background.
+    fg_dilated = F.max_pool2d(support.to(dtype=masks.dtype), kernel_size=3, stride=1, padding=1)
+    fg_eroded = 1.0 - F.max_pool2d((~support).to(dtype=masks.dtype), kernel_size=3, stride=1, padding=1)
+    is_boundary = (fg_dilated > 0.5) & (fg_eroded < 0.5)
+
+    smooth_fg = F.avg_pool2d(foreground_masks, kernel_size=3, stride=1, padding=1)
+    boundary_fg = smooth_fg * bilateral_factors
+
+    # Effective foreground combines overlap resolution and boundary blending
+    # while preserving solid foreground interior.
+    effective_foreground = torch.where(
+        overlap.expand_as(foreground_masks),
+        reweighted_overlap,
+        torch.where(
+            is_boundary,
+            boundary_fg,
+            foreground_masks,
+        ),
+    )
+
+    # Normalize total foreground weight if it exceeds 1.0, then let background
+    # seamlessly take the remainder everywhere on the canvas.
+    fg_total = effective_foreground.sum(dim=0, keepdim=True)
+    scale = torch.where(fg_total > 1.0, 1.0 / fg_total.clamp_min(epsilon), torch.ones_like(fg_total))
+    effective_foreground = effective_foreground * scale
+    effective_background = (1.0 - effective_foreground.sum(dim=0, keepdim=True)).clamp(0.0, 1.0)
+
+    return torch.cat([effective_background, effective_foreground], dim=0), record(
         sigma_values=sigma_values,
         weights=raw_weights,
     )
