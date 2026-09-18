@@ -771,6 +771,7 @@ class SemanticAnchorRuntime:
         use_boolean_mask: bool = True,
         attention_layer_index: int | None = None,
         attention_layer_name: str | None = None,
+        denoised_refiner=None,
     ):
         """Generate one image using the controlled centering ablation.
 
@@ -983,6 +984,20 @@ class SemanticAnchorRuntime:
                     noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
                     latent_view = pipeline.scheduler_step(noise_pred, step_index, latent_view)
+
+                    # Optional inference-time refinement (for example,
+                    # Distillation++).  The hook receives the per-region clean
+                    # estimate before temporary spatial centering is reversed
+                    # and before region latents are fused by their masks.
+                    # ``None`` preserves the original runtime bit-for-bit.
+                    if denoised_refiner is not None:
+                        latent_view = denoised_refiner(
+                            student_denoised=latent_view,
+                            step_index=step_index,
+                            timestep=timestep,
+                            text_embeddings=text_embeds,
+                            student_guidance_scale=float(guidance_scale),
+                        )
 
                     if step_index < bootstrap_steps:
                         from util import shift_to_mask_bbox_center
