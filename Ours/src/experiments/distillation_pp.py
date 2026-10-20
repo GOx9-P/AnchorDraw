@@ -161,6 +161,8 @@ class DistillationPPRefiner:
         )
         teacher_input = alpha_s * student_denoised + sigma_s * renoise_noise
 
+        if student_denoised.is_cuda:
+            torch.cuda.synchronize(device=student_denoised.device)
         started = perf_counter()
         teacher_output = self.teacher_unet(
             torch.cat([teacher_input, teacher_input], dim=0),
@@ -173,6 +175,8 @@ class DistillationPPRefiner:
             teacher_noise_cond - teacher_noise_uncond
         )
         teacher_denoised = (teacher_input - sigma_s * teacher_noise_cfg) / alpha_s.clamp_min(1e-8)
+        if student_denoised.is_cuda:
+            torch.cuda.synchronize(device=student_denoised.device)
         elapsed = perf_counter() - started
 
         refined = torch.lerp(

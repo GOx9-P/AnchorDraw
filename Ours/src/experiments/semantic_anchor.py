@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import defaultdict
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from inspect import signature
 from math import ceil, isqrt
 from typing import Dict, Iterable, List, Literal, Mapping, MutableMapping, Sequence, Tuple
 
@@ -111,11 +112,13 @@ class _CaptureStore:
 
 
 class _CrossAttentionCaptureProcessor:
-    """Diffusers AttnProcessor-compatible implementation with map capture."""
+    """Capture cross-attention while returning the original processor output."""
 
-    def __init__(self, layer_name: str, store: _CaptureStore) -> None:
+    def __init__(self, layer_name: str, store: _CaptureStore, original) -> None:
         self.layer_name = layer_name
         self.store = store
+        self.original = original
+        self.original_accepts_temb = "temb" in signature(original.__call__).parameters
 
     def __call__(
         self,
@@ -127,7 +130,20 @@ class _CrossAttentionCaptureProcessor:
         *args,
         **kwargs,
     ) -> torch.Tensor:
-        residual = hidden_states
+        if args:
+            raise RuntimeError(f"Unexpected positional attention arguments: {len(args)}")
+        original_kwargs = dict(kwargs)
+        if self.original_accepts_temb:
+            original_kwargs["temb"] = temb
+        result = self.original(
+            attn,
+            hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+            attention_mask=attention_mask,
+            **original_kwargs,
+        )
+        if not self.store.enabled or self.store.current_timestep is None:
+            return result
 
         if getattr(attn, "spatial_norm", None) is not None:
             hidden_states = attn.spatial_norm(hidden_states, temb)
@@ -150,26 +166,13 @@ class _CrossAttentionCaptureProcessor:
         if getattr(attn, "norm_cross", False):
             encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
         key = attn.to_k(encoder_hidden_states)
-        value = attn.to_v(encoder_hidden_states)
-
         query = attn.head_to_batch_dim(query)
         key = attn.head_to_batch_dim(key)
-        value = attn.head_to_batch_dim(value)
 
         attention_probs = attn.get_attention_scores(query, key, attention_mask)
         self.store.add(self.layer_name, attention_probs, batch_size, int(attn.heads))
 
-        hidden_states = torch.bmm(attention_probs, value)
-        hidden_states = attn.batch_to_head_dim(hidden_states)
-        hidden_states = attn.to_out[0](hidden_states)
-        hidden_states = attn.to_out[1](hidden_states)
-
-        if input_ndim == 4:
-            hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
-        if getattr(attn, "residual_connection", False):
-            hidden_states = hidden_states + residual
-        hidden_states = hidden_states / getattr(attn, "rescale_output_factor", 1.0)
-        return hidden_states
+        return result
 
 
 class SemanticAnchorCapture:
@@ -197,7 +200,7 @@ class SemanticAnchorCapture:
         processors = {}
         for name, processor in self._original_processors.items():
             if name.endswith("attn2.processor"):
-                processors[name] = _CrossAttentionCaptureProcessor(name, self.store)
+                processors[name] = _CrossAttentionCaptureProcessor(name, self.store, processor)
             else:
                 processors[name] = processor
         self.unet.set_attn_processor(processors)
@@ -438,10 +441,9 @@ class SemanticAnchorRuntimeStep:
 class WeightedMaskRuntimeStep:
     """Diagnostics for one weighted-mask mixing step.
 
-    The record deliberately describes only the foreground overlap.  The
-    background region and every non-overlapping foreground pixel retain the
-    baseline quantized-mask value, making this a controlled replacement of
-    the *relative* weights only where regions compete.
+    The overlap count covers foreground competition. The same step can also
+    smooth a foreground boundary and replace the background by the remaining
+    weight, so this record does not describe every changed pixel.
     """
 
     step_index: int
@@ -488,9 +490,9 @@ def build_weighted_overlap_masks(
 
     ``masks`` contains one background region followed by foreground regions.
     ``region_features`` contains the prior denoised latent for those foreground
-    regions in the same global latent coordinate system.  The output preserves
-    the sum of foreground mask weights at every overlap pixel; it therefore
-    changes *which region wins* there, without changing the total mixing mass.
+    regions in the same global latent coordinate system. At overlap pixels,
+    the output foreground sum is min(original sum, 1). Thus it preserves the
+    sum only where that sum is at most 1; it also changes boundary weights.
     """
 
     if policy not in {

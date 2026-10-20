@@ -50,7 +50,7 @@ def verify_inputs(profile: str, coco_root: Path, run_profile: str | None = None)
         image_id = int(row["image_id"])
         image_metadata = instance_images.get(image_id)
         if (image_metadata is None or image_metadata["file_name"] != row["file_name"]
-                or [int(image_metadata["width"]), int(image_metadata["height"])] != row["original_size"]
+                or [int(image_metadata["height"]), int(image_metadata["width"])] != row["original_size"]
                 or image_id not in caption_image_ids):
             raise RuntimeError(f"Manifest image absent or mismatched in COCO annotations: {row['sample_id']}")
         if not (len(row["annotation_ids"]) == len(row["category_ids"]) == len(row["category_names"])):
@@ -80,7 +80,7 @@ def verify_inputs(profile: str, coco_root: Path, run_profile: str | None = None)
             with Image.open(path) as image:
                 if image.size[0] <= 0 or image.size[1] <= 0:
                     raise RuntimeError(f"Empty COCO image: {path}")
-                if name in manifest_image_sizes and image.size != manifest_image_sizes[name]:
+                if name in manifest_image_sizes and image.size[::-1] != manifest_image_sizes[name]:
                     raise RuntimeError(f"COCO image dimensions differ from manifest: {path}")
                 image.verify()
             with Image.open(path) as image:
