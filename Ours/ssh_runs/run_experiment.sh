@@ -9,10 +9,11 @@ usage() {
   printf '%s\n' \
     'Usage:' \
     '  bash Ours/ssh_runs/run_experiment.sh --list' \
-    '  bash Ours/ssh_runs/run_experiment.sh --experiment ID --coco-root DIR --output-root DIR [--tag NAME] [--python BIN] [--gpu-mode MODE] [--run-profile PROFILE]' \
-    '  bash Ours/ssh_runs/run_experiment.sh --experiment cleanfid --dataset-root DIR --output-root DIR [--experiments ID1,ID2] [--tag NAME]' \
-    '  bash Ours/ssh_runs/run_experiment.sh --experiment pytorch_fid --export-dir DIR --coco-root DIR --output-root DIR [--reference-dir DIR] [--tag NAME]' \
-    '  bash Ours/ssh_runs/run_experiment.sh --experiment ttur_fid --export-dir DIR --coco-root DIR --output-root DIR [--reference-dir DIR] [--ttur-fid-file FILE] [--tag NAME]' \
+    '  bash Ours/ssh_runs/run_experiment.sh --experiment ID [--coco-root DIR] [--output-root DIR] [--tag NAME] [--python BIN] [--gpu-mode MODE] [--run-profile PROFILE]' \
+    '  bash Ours/ssh_runs/run_experiment.sh --prepare-coco [--coco-root DIR] [--output-root DIR] [--python BIN]' \
+    '  bash Ours/ssh_runs/run_experiment.sh --experiment cleanfid --dataset-root DIR [--output-root DIR] [--experiments ID1,ID2] [--tag NAME]' \
+    '  bash Ours/ssh_runs/run_experiment.sh --experiment pytorch_fid --export-dir DIR [--coco-root DIR] [--output-root DIR] [--reference-dir DIR] [--tag NAME]' \
+    '  bash Ours/ssh_runs/run_experiment.sh --experiment ttur_fid --export-dir DIR [--coco-root DIR] [--output-root DIR] [--reference-dir DIR] [--ttur-fid-file FILE] [--tag NAME]' \
     '' \
     'This is the only Bash entrypoint. Use --list for all experiment IDs.'
 }
@@ -31,10 +32,12 @@ dataset_root=""; export_dir=""; reference_dir=""; metric_experiments=""; ttur_fi
 python_bin="${PYTHON_BIN:-python3}"
 gpu_mode="high_vram_24gb"
 run_profile_override=""
+prepare_coco_only=false
 
 while (($#)); do
   case "$1" in
     --list) list_profiles; exit 0 ;;
+    --prepare-coco) prepare_coco_only=true; shift ;;
     --experiment) experiment="${2:?Missing experiment ID}"; shift 2 ;;
     --coco-root) coco_root="${2:?Missing COCO directory}"; shift 2 ;;
     --output-root) output_root="${2:?Missing output directory}"; shift 2 ;;
@@ -52,10 +55,18 @@ while (($#)); do
   esac
 done
 
-if [[ -z "$experiment" || -z "$output_root" || ! "$experiment" =~ ^[a-z0-9_]+$ ]]; then
+if [[ -z "$output_root" ]]; then output_root="${ANCHORDRAW_OUTPUT_ROOT:-${HOME:?HOME is required}/anchordraw_runs}"; fi
+if [[ -z "$coco_root" ]]; then coco_root="${ANCHORDRAW_COCO_ROOT:-$output_root/_coco2017}"; fi
+
+if [[ "$prepare_coco_only" == true && -n "$experiment" ]]; then
+  echo "--prepare-coco cannot be combined with --experiment" >&2; exit 2
+fi
+if [[ "$prepare_coco_only" != true && ( -z "$experiment" || ! "$experiment" =~ ^[a-z0-9_]+$ ) ]]; then
   usage >&2; exit 2
 fi
-if [[ -f "$SCRIPT_DIR/profiles/$experiment.py" ]]; then
+if [[ "$prepare_coco_only" == true ]]; then
+  profile_kind="prepare_coco"
+elif [[ -f "$SCRIPT_DIR/profiles/$experiment.py" ]]; then
   profile_kind="full1073"
   profile_script="$SCRIPT_DIR/profiles/$experiment.py"
 elif [[ -f "$SCRIPT_DIR/diagnostics/$experiment.py" ]]; then
@@ -85,6 +96,168 @@ fi
 if ! command -v "$python_bin" >/dev/null 2>&1; then
   echo "Python command not found: $python_bin" >&2; exit 2
 fi
+
+prepare_coco() {
+  "$python_bin" - "$coco_root" "${1:-normal}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import sys
+import zipfile
+from pathlib import Path, PurePosixPath
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+root = Path(sys.argv[1]).expanduser().resolve()
+repair = sys.argv[2] == "repair"
+root.mkdir(parents=True, exist_ok=True)
+val_dir = root / "val2017"
+ann_dir = root / "annotations"
+cache_dir = root / ".downloads"
+val_url = os.environ.get("ANCHORDRAW_COCO_VAL_URL", "http://images.cocodataset.org/zips/val2017.zip")
+ann_url = os.environ.get("ANCHORDRAW_COCO_ANN_URL", "http://images.cocodataset.org/annotations/annotations_trainval2017.zip")
+# Archive lengths and SHA-256 values from TensorFlow Datasets:
+# https://github.com/tensorflow/datasets/blob/master/tensorflow_datasets/url_checksums/coco_captions.txt
+val_size = 815585330
+ann_size = 252907541
+val_sha256 = "4f7e2ccb2866ec5041993c9cf2a952bbed69647b115d0f74da7ce8f4bef82f05"
+ann_sha256 = "113a836d90195ee1f884e704da6304dfaaecff1f023f49b6ca93c4aaae470268"
+required_annotations = ("instances_val2017.json", "captions_val2017.json")
+
+
+def valid_zip(path: Path, expected_size: int, expected_sha256: str) -> bool:
+    if not path.is_file() or path.stat().st_size != expected_size:
+        return False
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(8 * 1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != expected_sha256:
+            return False
+        with zipfile.ZipFile(path) as archive:
+            return archive.testzip() is None
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
+def download(url: str, target: Path, expected_size: int, expected_sha256: str) -> Path:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    if valid_zip(target, expected_size, expected_sha256):
+        print(f"[COCO] Reusing verified archive: {target}", flush=True)
+        return target
+    partial = target.with_name(target.name + ".part")
+    if valid_zip(partial, expected_size, expected_sha256):
+        os.replace(partial, target)
+        return target
+    for attempt in range(1, 4):
+        offset = partial.stat().st_size if partial.is_file() else 0
+        headers = {"Range": f"bytes={offset}-"} if offset else {}
+        print(f"[COCO] Download {url} (attempt {attempt}/3, resume={offset} bytes)", flush=True)
+        try:
+            with urlopen(Request(url, headers=headers), timeout=120) as response:
+                status = getattr(response, "status", None)
+                if offset and status == 206:
+                    content_range = response.headers.get("Content-Range", "")
+                    if not content_range.startswith(f"bytes {offset}-"):
+                        raise RuntimeError(f"Unexpected resume range: {content_range}")
+                    mode = "ab"
+                else:
+                    mode = "wb"
+                with partial.open(mode) as output:
+                    shutil.copyfileobj(response, output, length=8 * 1024 * 1024)
+        except HTTPError as exc:
+            if exc.code == 416:
+                if valid_zip(partial, expected_size, expected_sha256):
+                    os.replace(partial, target)
+                    return target
+                partial.unlink(missing_ok=True)
+            if attempt == 3:
+                raise RuntimeError(f"COCO download failed: {url}") from exc
+            continue
+        except OSError as exc:
+            if attempt == 3:
+                raise RuntimeError(f"COCO download failed: {url}") from exc
+            continue
+        if valid_zip(partial, expected_size, expected_sha256):
+            os.replace(partial, target)
+            return target
+        print(f"[COCO] Archive incomplete or invalid; retrying: {partial}", flush=True)
+    raise RuntimeError(f"COCO archive is incomplete or invalid: {partial}")
+
+
+def extract_member(archive: zipfile.ZipFile, member: zipfile.ZipInfo, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".anchordraw_part")
+    try:
+        with archive.open(member) as source, temporary.open("wb") as output:
+            shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def annotations_usable() -> bool:
+    for name in required_annotations:
+        target = ann_dir / name
+        try:
+            with target.open(encoding="utf-8") as source:
+                payload = json.load(source)
+            if not isinstance(payload, dict) or not isinstance(payload.get("images"), list) or not isinstance(payload.get("annotations"), list):
+                return False
+        except (OSError, UnicodeError, ValueError):
+            return False
+    return True
+
+
+with (root / ".anchordraw_coco.lock").open("a+b") as lock:
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    image_count = sum(1 for path in val_dir.glob("*.jpg") if path.is_file())
+    if repair or image_count < 5000:
+        archive_path = download(val_url, cache_dir / "val2017.zip", val_size, val_sha256)
+        with zipfile.ZipFile(archive_path) as archive:
+            images = []
+            for member in archive.infolist():
+                parts = PurePosixPath(member.filename).parts
+                if len(parts) == 2 and parts[0] == "val2017" and re.fullmatch(r"[0-9]{12}\.jpg", parts[1]):
+                    images.append((member, parts[1]))
+            if len(images) != 5000 or len({name for _, name in images}) != 5000:
+                raise RuntimeError("Unexpected val2017 archive: expected 5000 unique JPEG names")
+            for member, name in images:
+                target = val_dir / name
+                if repair or not target.is_file() or target.stat().st_size != member.file_size:
+                    extract_member(archive, member, target)
+        print("[COCO] val2017 images extracted", flush=True)
+
+    if repair or not annotations_usable():
+        archive_path = download(ann_url, cache_dir / "annotations_trainval2017.zip", ann_size, ann_sha256)
+        with zipfile.ZipFile(archive_path) as archive:
+            for name in required_annotations:
+                member_name = f"annotations/{name}"
+                try:
+                    member = archive.getinfo(member_name)
+                except KeyError as exc:
+                    raise RuntimeError(f"COCO annotation archive lacks {member_name}") from exc
+                target = ann_dir / name
+                extract_member(archive, member, target)
+        print("[COCO] val2017 annotations extracted", flush=True)
+
+    if sum(1 for path in val_dir.glob("*.jpg") if path.is_file()) < 5000 or not annotations_usable():
+        raise RuntimeError(f"Incomplete COCO val2017 data: {root}")
+    print(f"[COCO] Ready: {root}", flush=True)
+PY
+}
+
+if [[ "$prepare_coco_only" == true ]]; then
+  prepare_coco
+  exit 0
+fi
+
 for command_name in sha256sum find sort xargs cmp; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Required provenance command not found: $command_name" >&2; exit 2
@@ -92,6 +265,9 @@ for command_name in sha256sum find sort xargs cmp; do
 done
 "$python_bin" "$SCRIPT_DIR/validate_ports.py" >/dev/null
 echo "[OK] All notebook-to-terminal ports match their source cells"
+if [[ "$profile_kind" != "metric" || "$experiment" != "cleanfid" ]]; then
+  "$python_bin" -c 'from PIL import Image'
+fi
 if [[ "$profile_kind" == "full1073" ]]; then
   "$python_bin" -c 'import torch, diffusers, open_clip, pycocotools; from torchmetrics.image.fid import FrechetInceptionDistance; from torchmetrics.image.inception import InceptionScore'
   if [[ "$experiment" == "ours_sd15_hypersd_pladis" ]]; then "$python_bin" -c 'import entmax'; fi
@@ -107,8 +283,11 @@ elif [[ "$profile_kind" == "metric" ]]; then
   if [[ ! -d "$export_dir/generated_images" || ! -f "$export_dir/metric_generated_manifest.jsonl" ]]; then
     echo "FID export needs generated_images/ and metric_generated_manifest.jsonl: $export_dir" >&2; exit 2
   fi
-  if [[ ! -d "$coco_root/val2017" ]]; then
-    echo "COCO root needs val2017/: $coco_root" >&2; exit 2
+  prepare_coco
+  if ! "$python_bin" -u "$SCRIPT_DIR/verify_inputs.py" sem_sd15_lcm "$coco_root" >/dev/null 2>&1; then
+    echo "[COCO] Metric reference validation failed; restoring official val2017 files once" >&2
+    prepare_coco repair
+    "$python_bin" -u "$SCRIPT_DIR/verify_inputs.py" sem_sd15_lcm "$coco_root" >/dev/null
   fi
   export_dir="$(cd -- "$export_dir" && pwd -P)"
   coco_root="$(cd -- "$coco_root" && pwd -P)"
@@ -120,7 +299,7 @@ elif [[ "$profile_kind" == "metric" ]]; then
   fi
 else
   if [[ ! -d "$coco_root/val2017" || ! -f "$coco_root/annotations/instances_val2017.json" || ! -f "$coco_root/annotations/captions_val2017.json" ]]; then
-    echo "COCO root must contain val2017/ and both val2017 annotation JSON files: $coco_root" >&2; exit 2
+    prepare_coco
   fi
   coco_root="$(cd -- "$coco_root" && pwd -P)"
 fi
@@ -133,7 +312,11 @@ output_root="$(cd -- "$output_root" && pwd -P)"
 if [[ -z "$run_tag" ]]; then run_tag="$(date -u +%Y%m%dT%H%M%SZ)"; fi
 unset PYTHONOPTIMIZE DDIM_EXPERIMENT_PROFILE PRECISION_PROFILE LCM_EXPERIMENT_PROFILE
 if [[ "$profile_kind" != "metric" ]]; then
-  input_report="$("$python_bin" -u "$SCRIPT_DIR/verify_inputs.py" "$experiment" "$coco_root" "$run_profile_override")"
+  if ! input_report="$("$python_bin" -u "$SCRIPT_DIR/verify_inputs.py" "$experiment" "$coco_root" "$run_profile_override" 2>/dev/null)"; then
+    echo "[COCO] Input validation failed; restoring official val2017 files once" >&2
+    prepare_coco repair
+    input_report="$("$python_bin" -u "$SCRIPT_DIR/verify_inputs.py" "$experiment" "$coco_root" "$run_profile_override")"
+  fi
   printf '%s\n' "$input_report"
 fi
 run_dir="$output_root/$run_tag/$experiment"
