@@ -8,6 +8,8 @@ cd -- "$REPO_ROOT"
 usage() {
   printf '%s\n' \
     'Usage:' \
+    '  ./Ours/ssh_runs/run_experiment.sh [--output-root DIR] [--coco-root DIR] [--tag NAME] [--python BIN] [--gpu-mode MODE]' \
+    '  ./Ours/ssh_runs/run_experiment.sh --dry-run' \
     '  bash Ours/ssh_runs/run_experiment.sh --list' \
     '  bash Ours/ssh_runs/run_experiment.sh --experiment ID [--coco-root DIR] [--output-root DIR] [--tag NAME] [--python BIN] [--gpu-mode MODE] [--run-profile PROFILE]' \
     '  bash Ours/ssh_runs/run_experiment.sh --prepare-coco [--coco-root DIR] [--output-root DIR] [--python BIN]' \
@@ -15,6 +17,7 @@ usage() {
     '  bash Ours/ssh_runs/run_experiment.sh --experiment pytorch_fid --export-dir DIR [--coco-root DIR] [--output-root DIR] [--reference-dir DIR] [--tag NAME]' \
     '  bash Ours/ssh_runs/run_experiment.sh --experiment ttur_fid --export-dir DIR [--coco-root DIR] [--output-root DIR] [--reference-dir DIR] [--ttur-fid-file FILE] [--tag NAME]' \
     '' \
+    'No arguments: run all 38 non-SD3 experiments sequentially (14 benchmarks, 21 diagnostics, 3 FID tools).' \
     'This is the only Bash entrypoint. Use --list for all experiment IDs.'
 }
 
@@ -33,11 +36,13 @@ python_bin="${PYTHON_BIN:-python3}"
 gpu_mode="high_vram_24gb"
 run_profile_override=""
 prepare_coco_only=false
+dry_run=false
 
 while (($#)); do
   case "$1" in
     --list) list_profiles; exit 0 ;;
     --prepare-coco) prepare_coco_only=true; shift ;;
+    --dry-run) dry_run=true; shift ;;
     --experiment) experiment="${2:?Missing experiment ID}"; shift 2 ;;
     --coco-root) coco_root="${2:?Missing COCO directory}"; shift 2 ;;
     --output-root) output_root="${2:?Missing output directory}"; shift 2 ;;
@@ -61,11 +66,13 @@ if [[ -z "$coco_root" ]]; then coco_root="${ANCHORDRAW_COCO_ROOT:-$output_root/_
 if [[ "$prepare_coco_only" == true && -n "$experiment" ]]; then
   echo "--prepare-coco cannot be combined with --experiment" >&2; exit 2
 fi
-if [[ "$prepare_coco_only" != true && ( -z "$experiment" || ! "$experiment" =~ ^[a-z0-9_]+$ ) ]]; then
-  usage >&2; exit 2
+if [[ -n "$experiment" && ! "$experiment" =~ ^[a-z0-9_]+$ ]]; then
+  echo "Invalid experiment ID: $experiment" >&2; exit 2
 fi
 if [[ "$prepare_coco_only" == true ]]; then
   profile_kind="prepare_coco"
+elif [[ -z "$experiment" ]]; then
+  profile_kind="suite"
 elif [[ -f "$SCRIPT_DIR/profiles/$experiment.py" ]]; then
   profile_kind="full1073"
   profile_script="$SCRIPT_DIR/profiles/$experiment.py"
@@ -77,6 +84,12 @@ elif [[ -f "$SCRIPT_DIR/metric_profiles/$experiment.py" ]]; then
   profile_script="$SCRIPT_DIR/metric_profiles/$experiment.py"
 else
   echo "Unknown experiment: $experiment" >&2; exit 2
+fi
+if [[ "$profile_kind" == "suite" && ( -n "$dataset_root" || -n "$export_dir" || -n "$reference_dir" || -n "$metric_experiments" || -n "$ttur_fid_file" || -n "$run_profile_override" ) ]]; then
+  echo "Dataset/export/reference and run-profile options require --experiment" >&2; exit 2
+fi
+if [[ "$dry_run" == true && "$profile_kind" != "suite" ]]; then
+  echo "--dry-run applies only to the complete suite" >&2; exit 2
 fi
 if [[ -n "$run_tag" && ! "$run_tag" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
   echo "Invalid run tag: $run_tag" >&2; exit 2
@@ -255,6 +268,161 @@ PY
 
 if [[ "$prepare_coco_only" == true ]]; then
   prepare_coco
+  exit 0
+fi
+
+if [[ "$profile_kind" == "suite" ]]; then
+  # Baselines precede their matched AnchorDraw runs so verify_run can compare them.
+  benchmark_ids=(
+    sem_sd15_lcm ours_sd15_lcm ours_sd15_lcm_dpp
+    sem_sd15_hypersd ours_sd15_hypersd ours_sd15_hypersd_dpp ours_sd15_hypersd_pladis
+    sem_sdxl_euler ours_sdxl_euler
+    md_sd15_lcm md_sd15_hypersd md_sd15_ddim md_sdxl_euler md_sdxl_ddim
+  )
+  diagnostic_ids=()
+  for source in "$SCRIPT_DIR"/diagnostics/*.py; do
+    diagnostic_ids+=("${source##*/}")
+  done
+  diagnostic_ids=("${diagnostic_ids[@]%.py}")
+  if [[ "${#benchmark_ids[@]}" -ne 14 || "${#diagnostic_ids[@]}" -ne 21 ]]; then
+    echo "Unexpected benchmark or diagnostic profile count; inspect the suite before running" >&2; exit 2
+  fi
+  for id in "${benchmark_ids[@]}"; do
+    if [[ ! -f "$SCRIPT_DIR/profiles/$id.py" ]]; then
+      echo "Missing benchmark profile: $id" >&2; exit 2
+    fi
+  done
+  for id in cleanfid pytorch_fid ttur_fid; do
+    if [[ ! -f "$SCRIPT_DIR/metric_profiles/$id.py" ]]; then
+      echo "Missing metric profile: $id" >&2; exit 2
+    fi
+  done
+  if [[ -z "$run_tag" ]]; then run_tag="$(date -u +%Y%m%dT%H%M%SZ)"; fi
+  printf '[SUITE] tag=%s | diagnostics=%s | benchmarks=%s | FID tools=3\n' \
+    "$run_tag" "${#diagnostic_ids[@]}" "${#benchmark_ids[@]}"
+  if [[ "$dry_run" == true ]]; then
+    printf '[PLAN] %s\n' "${diagnostic_ids[@]}" "${benchmark_ids[@]}" pytorch_fid cleanfid ttur_fid
+    exit 0
+  fi
+
+  # Fail before any GPU work when packages needed by later FID/PLADIS stages are absent.
+  "$python_bin" - <<'PY'
+import importlib.util
+modules = ("torch", "diffusers", "open_clip", "pycocotools", "torchmetrics",
+           "entmax", "cleanfid", "pytorch_fid", "tensorflow", "imageio", "PIL")
+missing = [name for name in modules if importlib.util.find_spec(name) is None]
+if missing:
+    raise SystemExit("Missing suite dependencies: " + ", ".join(missing))
+PY
+  mkdir -p -- "$output_root"
+  output_root="$(cd -- "$output_root" && pwd -P)"
+  coco_root="$("$python_bin" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$coco_root")"
+  suite_root="$output_root/$run_tag"
+  if [[ -e "$suite_root" ]]; then
+    echo "Suite output already exists; choose a new --tag: $suite_root" >&2; exit 2
+  fi
+  mkdir -- "$suite_root"
+  echo "[SUITE] output=$suite_root | COCO=$coco_root"
+  prepare_coco
+
+  run_suite_profile() {
+    local id="$1"
+    shift
+    echo "[SUITE] Starting $id"
+    bash "$SCRIPT_DIR/run_experiment.sh" --experiment "$id" \
+      --coco-root "$coco_root" --output-root "$output_root" \
+      --tag "$run_tag" --python "$python_bin" --gpu-mode "$gpu_mode" "$@"
+  }
+
+  for id in "${diagnostic_ids[@]}"; do run_suite_profile "$id"; done
+  for id in "${benchmark_ids[@]}"; do run_suite_profile "$id"; done
+
+  # These two notebooks specifically evaluate the verified SemanticDraw SD1.5 LCM export.
+  export_dir="$suite_root/sem_sd15_lcm/metric_export"
+  if [[ ! -f "$export_dir/metric_generated_manifest.jsonl" ]]; then
+    echo "SemanticDraw SD1.5 LCM metric export is missing: $export_dir" >&2; exit 2
+  fi
+  run_suite_profile pytorch_fid --export-dir "$export_dir"
+  reference_dir="$suite_root/pytorch_fid/pytorch_fid_eval/sem_sd15_lcm/reference_images/sem_sd15_lcm"
+  if [[ ! -d "$reference_dir" ]]; then
+    echo "PyTorch FID reference images are missing: $reference_dir" >&2; exit 2
+  fi
+
+  # CleanFID's source notebook expects reference_images/ID and ID/generated_images.
+  # Build both resolutions from the verified COCO manifest and link all 14 exports.
+  dataset_root="$suite_root/_cleanfid_dataset"
+  "$python_bin" - "$suite_root" "$coco_root" "$dataset_root" "${benchmark_ids[@]}" <<'PY'
+import json
+import sys
+from pathlib import Path
+from PIL import Image
+
+suite, coco, dataset = (Path(arg).resolve() for arg in sys.argv[1:4])
+ids = sys.argv[4:]
+dataset.mkdir(parents=True, exist_ok=False)
+(dataset / "reference_images").mkdir()
+canonical = {}
+
+def link(target, path):
+    if path.exists() or path.is_symlink():
+        raise RuntimeError(f"CleanFID link already exists: {path}")
+    path.symlink_to(target.resolve(), target_is_directory=True)
+
+for profile in ids:
+    run_dir = suite / profile
+    summaries = list(run_dir.rglob("metric_export_summary.json"))
+    if len(summaries) != 1:
+        raise RuntimeError(f"Expected one metric export for {profile}, found {len(summaries)}")
+    export = summaries[0].parent
+    manifest = export / "metric_generated_manifest.jsonl"
+    rows = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
+    family = "sdxl" if "sdxl" in profile else "sd15"
+    expected_size = (1024, 1024) if family == "sdxl" else (512, 512)
+    if len(rows) != 1073 or len(list((export / "generated_images").glob("*.png"))) != 1073:
+        raise RuntimeError(f"Incomplete CleanFID export: {profile}")
+    identity = [(int(row["image_id"]), row["file_name"], tuple(row["target_size"])) for row in rows]
+    if any(size != expected_size for _, _, size in identity):
+        raise RuntimeError(f"Wrong reference size for {profile}")
+    if family not in canonical:
+        canonical[family] = identity
+        ref_dir = dataset / ("_reference_" + family)
+        ref_dir.mkdir()
+        for index, (_, file_name, _) in enumerate(identity):
+            source = coco / "val2017" / file_name
+            target = ref_dir / f"{index:04d}_reference.png"
+            with Image.open(source) as image:
+                image.convert("RGB").resize(expected_size, Image.Resampling.BILINEAR).save(target)
+        if len(list(ref_dir.glob("*.png"))) != 1073:
+            raise RuntimeError(f"Incomplete {family} CleanFID references")
+    elif identity != canonical[family]:
+        raise RuntimeError(f"Different COCO samples or order for {profile}")
+    link(export, dataset / profile)
+    link(dataset / ("_reference_" + family), dataset / "reference_images" / profile)
+print(f"[CleanFID] Prepared {len(ids)} verified experiment pairs: {dataset}", flush=True)
+PY
+  run_suite_profile cleanfid --dataset-root "$dataset_root"
+  "$python_bin" - "$suite_root/cleanfid" "${benchmark_ids[@]}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+run_dir = Path(sys.argv[1])
+expected = set(sys.argv[2:])
+reports = list(run_dir.rglob("cleanfid_results.json"))
+if len(reports) != 1:
+    raise SystemExit(f"Expected one CleanFID report, found {len(reports)}")
+rows = json.loads(reports[0].read_text(encoding="utf-8"))
+found = [row.get("experiment") for row in rows]
+if len(rows) != len(expected) or set(found) != expected:
+    raise SystemExit(f"CleanFID experiment list mismatch: {found}")
+if any(row.get("num_generated") != 1073 or row.get("num_reference") != 1073 for row in rows):
+    raise SystemExit("CleanFID did not evaluate 1073 generated and reference images for every benchmark")
+print("[CleanFID] Verified all 14 benchmark reports", flush=True)
+PY
+  run_suite_profile ttur_fid --export-dir "$export_dir" --reference-dir "$reference_dir"
+  printf '%s\n' "${diagnostic_ids[@]}" "${benchmark_ids[@]}" pytorch_fid cleanfid ttur_fid \
+    > "$suite_root/suite_complete.txt"
+  echo "[SUITE PASS] All 38 non-SD3 experiments completed: $suite_root"
   exit 0
 fi
 

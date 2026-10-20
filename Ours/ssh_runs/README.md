@@ -2,11 +2,11 @@
 
 **Audit 2026-10-20:** các profile Hyper-SD dừng nếu không gỡ được LCM LoRA mặc định. Mã mask AnchorDraw chuẩn hóa ở vùng chồng lấn bằng log-softmax để tránh mất toàn bộ trọng số tiền cảnh khi các trọng số bilateral quá nhỏ. Benchmark kiểm tra dependency trước khi tải mô hình, không tự cài `open-clip-torch` giữa run và so snapshot mã/Python trước và sau khi sinh ảnh. Cặp đối chứng cùng tag chỉ được chấp nhận nếu run trước đã hoàn tất hậu kiểm. Các sửa đổi này chưa được kiểm chứng bằng một run GPU mới; các metric lịch sử không phải kết quả của mã hiện tại.
 
-**Chỉ chạy một file Bash: `Ours/ssh_runs/run_experiment.sh`.** Nó chọn thí nghiệm bằng `--experiment`, bao gồm cả các phép FID. Thư mục này có chương trình Python cho toàn bộ 38 notebook ngoài SD3 trong `Ours/`: 14 benchmark 1.073 ảnh, 21 phép smoke/ablation và 3 công cụ FID phụ. Các file Python trong `profiles/`, `diagnostics/` và `metric_profiles/` là mã nội bộ do Bash gọi; khi chạy trên máy chủ, chúng không đọc notebook. `export_notebooks.py` chỉ dùng khi cần đồng bộ lại mã nguồn notebook. Đầu mỗi chương trình ghi tên notebook và SHA-256 của nguồn.
+**Chỉ chạy một file Bash: `Ours/ssh_runs/run_experiment.sh`.** Gọi file này không có đối số sẽ chạy tuần tự toàn bộ 38 thí nghiệm ngoài SD3: 21 phép smoke/ablation, 14 benchmark 1.073 ảnh và 3 công cụ FID phụ. File tự tải/kiểm tra COCO, tạo chung một tag, ghép đúng cặp baseline/AnchorDraw và chuẩn bị ảnh tham chiếu cho CleanFID. Nếu cần xử lý lỗi một mục riêng lẻ, vẫn có thể chọn bằng `--experiment`. Các file Python trong `profiles/`, `diagnostics/` và `metric_profiles/` là mã nội bộ do Bash gọi; khi chạy trên máy chủ, chúng không đọc notebook. `export_notebooks.py` chỉ dùng khi cần đồng bộ lại mã nguồn notebook. Đầu mỗi chương trình ghi tên notebook và SHA-256 của nguồn.
 
 ## Chuẩn bị
 
-- Python 3.11+, PyTorch CUDA tương thích GPU và driver. Cài `Ours/requirements.txt`; các cấu hình PLADIS cần thêm `entmax`. Công cụ FID phụ cần `clean-fid`, `pytorch-fid` hoặc TensorFlow + `imageio` tương ứng. Không chạy các ô cài gói của notebook trên máy chủ.
+- Python 3.11+, PyTorch CUDA tương thích GPU và driver. Cài `Ours/requirements.txt`; bản chạy toàn bộ cần thêm `entmax`, `clean-fid`, `pytorch-fid`, TensorFlow và `imageio`. Bash kiểm tra các package này trước khi chạy GPU. Không chạy các ô cài gói của notebook trên máy chủ.
 - Nhiều profile giữ guard tương thích của notebook và sẽ dừng nếu Python còn import được `torchao`; môi trường SSH dùng các profile đó cần không cài gói này. Thông báo lỗi có thể vẫn nhắc Kaggle/Colab vì là mã nguồn notebook được tách ra.
 - File Bash tự tải và giải nén COCO 2017 validation images cùng hai annotation JSON nếu thiếu. Mặc định dữ liệu ở `~/anchordraw_runs/_coco2017`, đầu ra ở `~/anchordraw_runs`; có thể đổi bằng `--coco-root` và `--output-root`. Archive được giữ trong `_coco2017/.downloads/` để dùng lại hoặc sửa lần giải nén dở. URL HTTP đến từ trang COCO; trước khi giải nén, Bash kiểm kích thước và SHA-256 cố định của cả hai archive theo checksum của TensorFlow Datasets. Máy chủ cần truy cập Internet và đủ dung lượng cho archive, ảnh đã giải nén và đầu ra. Runner kiểm tra 1.073 bản ghi và ảnh trước khi tải mô hình. COCO không cần đưa lên Git.
 - Đặt `HF_TOKEN` trong môi trường SSH nếu checkpoint yêu cầu xác thực. Chạy trong `tmux` nếu cần giữ tiến trình sau khi ngắt SSH.
@@ -14,23 +14,20 @@
 Từ thư mục gốc repository:
 
 ```bash
-bash Ours/ssh_runs/run_experiment.sh --list
-bash Ours/ssh_runs/run_experiment.sh \
-  --experiment sem_sd15_lcm \
-  --tag rerun_maskstd1
+./Ours/ssh_runs/run_experiment.sh
 ```
 
-Sau đó chạy cặp AnchorDraw SD1.5 tương ứng với **cùng dữ liệu và tag**:
+Lệnh trên chạy đủ 38 mục theo thứ tự, dừng ngay nếu một mục lỗi và giữ `console.log` của mục đã bắt đầu. Xem danh sách trước khi chạy bằng `./Ours/ssh_runs/run_experiment.sh --dry-run`. Toàn bộ đầu ra nằm dưới `~/anchordraw_runs/TAG/`; Bash không ghi đè tag đã tồn tại, vì thế nếu cần chạy lại toàn bộ sau lỗi hãy dùng tag mới. Việc chạy đủ toàn bộ bao gồm cả diagnostic SemanticDraw trên 5.000 ảnh COCO, nên cần dự trù thời gian và dung lượng tương ứng.
+
+Nếu cần chạy riêng một mục để chẩn đoán:
 
 ```bash
-bash Ours/ssh_runs/run_experiment.sh \
-  --experiment ours_sd15_lcm \
-  --tag rerun_maskstd1
+./Ours/ssh_runs/run_experiment.sh --experiment sem_sd15_lcm --tag debug_sem_sd15_lcm
 ```
 
 Có thể tải và kiểm tra cấu trúc COCO trước bằng chính file đó: `bash Ours/ssh_runs/run_experiment.sh --prepare-coco`. Nếu dữ liệu đã nằm ở máy chủ, dùng `--coco-root /đường/dẫn/coco`; runner dùng lại khi 1.073 mẫu vượt kiểm tra. Có thể đặt `--output-root` đến ổ đĩa lớn; khi không chỉ định `--coco-root`, dữ liệu sẽ nằm trong `_coco2017/` của output root ấy. Tải bị ngắt có thể chạy lại cùng lệnh; file `.part` được tải tiếp khi máy chủ nguồn hỗ trợ HTTP Range. Nếu dữ liệu có lỗi, runner thử khôi phục từ archive chính thức một lần rồi kiểm tra lại.
 
-Mỗi ID có thư mục riêng dưới `OUTPUT_ROOT/TAG/ID`. Lệnh từ chối ghi vào thư mục run đã có. `--python /path/to/venv/bin/python` chọn Python; `--gpu-mode low_vram|high_vram_24gb|a100_80gb` chỉ ảnh hưởng notebook nguồn có biến `COLAB_GPU_MODE`. Với benchmark `md_sd15_lcm`, Bash khóa `LCM_EXPERIMENT_PROFILE=g1_b1`, đúng hàng benchmark chính trong checklist; notebook nguồn mặc định `g1_b0` là ablation khác.
+Mỗi ID có thư mục riêng dưới `OUTPUT_ROOT/TAG/ID`. Lệnh từ chối ghi vào thư mục run đã có. `--python /path/to/venv/bin/python` chọn Python; `--gpu-mode low_vram|high_vram_24gb|a100_80gb` chỉ ảnh hưởng notebook nguồn có biến `COLAB_GPU_MODE`. Với benchmark `md_sd15_lcm`, Bash khóa `LCM_EXPERIMENT_PROFILE=g1_b1`, đúng hàng benchmark chính trong checklist; notebook nguồn mặc định `g1_b0` là ablation khác. Bản chạy toàn bộ thực thi PyTorch-FID và TTUR-FID trên `sem_sd15_lcm`, đúng nguồn của hai notebook đó. CleanFID đánh giá cả 14 benchmark bằng ảnh tham chiếu COCO được đổi kích thước bilinear theo độ phân giải 512 hoặc 1024; layout tự tạo nằm trong `TAG/_cleanfid_dataset`.
 
 ## Nhóm cấu hình
 
