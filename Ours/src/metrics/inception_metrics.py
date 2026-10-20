@@ -16,10 +16,12 @@ class InceptionMetricsAccumulator:
         compute_is: bool = True,
         fid_feature: int = 2048,
         is_splits: int = 10,
+        metric_seed: int = 2024,
     ):
         self.device = device
         self.compute_fid = bool(compute_fid)
         self.compute_is = bool(compute_is)
+        self.metric_seed = int(metric_seed)
 
         self.fid = None
         self.inception_score = None
@@ -67,7 +69,12 @@ class InceptionMetricsAccumulator:
         if self.fid is not None:
             metrics["fid"] = float(self.fid.compute().detach().cpu().item())
         if self.inception_score is not None:
-            mean, std = self.inception_score.compute()
+            # TorchMetrics randomly permutes images before forming IS splits.
+            # Keep the permutation reproducible without changing generation RNG.
+            cuda_devices = [self.device.index or 0] if self.device.type == "cuda" else []
+            with torch.random.fork_rng(devices=cuda_devices):
+                torch.manual_seed(self.metric_seed)
+                mean, std = self.inception_score.compute()
             metrics["is_mean"] = float(mean.detach().cpu().item())
             metrics["is_std"] = float(std.detach().cpu().item())
         return metrics

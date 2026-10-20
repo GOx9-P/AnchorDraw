@@ -958,6 +958,11 @@ class SemanticDrawPipeline(nn.Module):
                 prompts = [background_prompt] + prompts
                 negative_prompts = [background_negative_prompt] + negative_prompts
                 has_background = False # Regard that background does not exist.
+                # The background is now an ordinary region in fg_masks/prompts.
+                # Keep the batch counts in sync before encoding text and latents.
+                num_masks = len(fg_masks)
+                num_prompts = len(prompts)
+                num_nprompts = len(negative_prompts)
             else:
                 if background is None and background_prompt is None:
                     background = torch.ones(1, 3, height, width, dtype=self.dtype, device=self.device)

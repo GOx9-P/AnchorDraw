@@ -40,6 +40,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clip-batch-size", type=int, default=32)
     parser.add_argument("--fid-feature", type=int, default=2048)
     parser.add_argument("--is-splits", type=int, default=10)
+    parser.add_argument("--metric-seed", type=int, default=2024)
     parser.add_argument("--allow-missing-generated", action="store_true")
     parser.add_argument("--no-mask-foreground-for-clip", action="store_true")
     parser.add_argument("--no-mask-background-for-clip", action="store_true")
@@ -77,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         clip_batch_size=args.clip_batch_size,
         fid_feature=args.fid_feature,
         is_splits=args.is_splits,
+        metric_seed=args.metric_seed,
         error_on_missing_generated=not args.allow_missing_generated,
         mask_foreground_for_clip=not args.no_mask_foreground_for_clip,
         mask_background_for_clip=not args.no_mask_background_for_clip,

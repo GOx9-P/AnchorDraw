@@ -9,12 +9,16 @@ attention heads and target tokens to keep the smoke experiment memory bounded.
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from math import ceil, isqrt
 from typing import Dict, Iterable, List, Literal, Mapping, MutableMapping, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
+
+
+ATTENTION_COORDINATE_POLICY = "inverse_roll_image_after_latent_shift_r1"
 
 
 def find_target_token_indices(tokenizer, prompt: str, target_text: str) -> List[int]:
@@ -548,13 +552,16 @@ def build_weighted_overlap_masks(
     # that precision; the result is cast back before latent mixing.
     ys = torch.arange(latent_h, device=masks.device, dtype=torch.float32).view(1, 1, latent_h, 1)
     xs = torch.arange(latent_w, device=masks.device, dtype=torch.float32).view(1, 1, 1, latent_w)
-    raw_weights = foreground_masks.clone()
-    bilateral_factors = torch.ones_like(foreground_masks)
+    # Keep diagnostic products in float32. Use log scores for normalization:
+    # even float32 exponentials can underflow for distant overlap pixels.
+    raw_weights = foreground_masks.float().clone()
+    bilateral_factors = torch.ones_like(raw_weights)
+    log_weights = torch.log(foreground_masks.float().clamp_min(epsilon))
     sigma_values: List[float] = []
 
     for region_index, point_xy in enumerate(anchor_points_xy):
         weight = foreground_masks[region_index : region_index + 1]
-        region_factor = torch.ones((1, 1, latent_h, latent_w), device=masks.device, dtype=torch.float32)
+        log_factor = torch.zeros((1, 1, latent_h, latent_w), device=masks.device, dtype=torch.float32)
         if policy != "semantic_only":
             anchor_y, anchor_x = _image_point_to_latent_index(
                 point_xy,
@@ -562,8 +569,7 @@ def build_weighted_overlap_masks(
                 latent_size=(latent_h, latent_w),
             )
             distance_sq = (ys - anchor_y).pow(2) + (xs - anchor_x).pow(2)
-            spatial_factor = torch.exp(-distance_sq / (2.0 * spatial_sigma_latent**2))
-            region_factor = region_factor * spatial_factor
+            log_factor = log_factor - distance_sq / (2.0 * spatial_sigma_latent**2)
 
         if policy != "spatial_only":
             features = region_features[region_index].float()
@@ -574,8 +580,10 @@ def build_weighted_overlap_masks(
                 # There is no semantic evidence to apply in that case, so leave
                 # its spatial weighting unchanged instead of producing NaN.
                 sigma_values.append(0.0)
-                bilateral_factors[region_index : region_index + 1] = region_factor.to(dtype=foreground_masks.dtype)
-                raw_weights[region_index : region_index + 1] = weight * bilateral_factors[region_index : region_index + 1]
+                region_factor = torch.exp(log_factor)
+                log_weights[region_index : region_index + 1] += log_factor
+                bilateral_factors[region_index : region_index + 1] = region_factor
+                raw_weights[region_index : region_index + 1] = weight.float() * region_factor
                 continue
             feature_mean = active_features.mean(dim=0, keepdim=True)
             sigma_semantic = torch.sqrt(
@@ -589,16 +597,21 @@ def build_weighted_overlap_masks(
             )
             anchor_feature = features[:, anchor_y, anchor_x].view(-1, 1, 1)
             feature_distance_sq = (features - anchor_feature).pow(2).sum(dim=0, keepdim=True)
-            semantic_factor = torch.exp(-feature_distance_sq / (2.0 * sigma_semantic**2))
-            region_factor = region_factor * semantic_factor
+            log_factor = log_factor - feature_distance_sq / (2.0 * sigma_semantic**2)
 
-        bilateral_factors[region_index : region_index + 1] = region_factor.to(dtype=foreground_masks.dtype)
-        raw_weights[region_index : region_index + 1] = weight * bilateral_factors[region_index : region_index + 1]
+        region_factor = torch.exp(log_factor)
+        log_weights[region_index : region_index + 1] += log_factor
+        bilateral_factors[region_index : region_index + 1] = region_factor
+        raw_weights[region_index : region_index + 1] = weight.float() * region_factor
 
     # 1. Reweight foreground-foreground overlap to resolve region competition.
-    original_sum = foreground_masks.sum(dim=0, keepdim=True)
-    raw_sum = raw_weights.sum(dim=0, keepdim=True).clamp_min(epsilon)
-    reweighted_overlap = raw_weights / raw_sum * original_sum.clamp_max(1.0)
+    original_sum = foreground_masks.float().sum(dim=0, keepdim=True)
+    # Unsupported regions receive the smallest finite logit. Softmax is
+    # evaluated at every pixel, but only foreground overlaps use its result.
+    overlap_logits = torch.where(
+        support, log_weights, torch.full_like(log_weights, torch.finfo(log_weights.dtype).min)
+    )
+    reweighted_overlap = torch.softmax(overlap_logits, dim=0) * original_sum.clamp_max(1.0)
 
     # 2. Smooth boundary transition between foreground and background.
     # Detect perimeter band where foreground transitions into background.
@@ -607,7 +620,7 @@ def build_weighted_overlap_masks(
     is_boundary = (fg_dilated > 0.5) & (fg_eroded < 0.5)
 
     smooth_fg = F.avg_pool2d(foreground_masks, kernel_size=3, stride=1, padding=1)
-    boundary_fg = smooth_fg * bilateral_factors
+    boundary_fg = smooth_fg.float() * bilateral_factors
 
     # Effective foreground combines overlap resolution and boundary blending
     # while preserving solid foreground interior.
@@ -628,10 +641,137 @@ def build_weighted_overlap_masks(
     effective_foreground = effective_foreground * scale
     effective_background = (1.0 - effective_foreground.sum(dim=0, keepdim=True)).clamp(0.0, 1.0)
 
-    return torch.cat([effective_background, effective_foreground], dim=0), record(
+    return torch.cat([effective_background, effective_foreground], dim=0).to(dtype=masks.dtype), record(
         sigma_values=sigma_values,
         weights=raw_weights,
     )
+
+
+def _mask_bbox_center_shifts(masks: torch.Tensor) -> List[Tuple[int, int]]:
+    """Return the exact shifts used by baseline bbox centering with reverse=True."""
+
+    height, width = masks.shape[-2:]
+    flat = masks.reshape(-1, height, width)
+    columns = flat.sum(dim=-2) > 0
+    rows = flat.sum(dim=-1) > 0
+    device = masks.device
+    left = torch.argmax(columns * torch.arange(width, 0, -1, device=device), dim=1)
+    right = torch.argmax(columns * torch.arange(width, device=device), dim=1)
+    top = torch.argmax(rows * torch.arange(height, 0, -1, device=device), dim=1)
+    bottom = torch.argmax(rows * torch.arange(height, device=device), dim=1)
+    dy = height // 2 - (top + bottom + 1) // 2
+    dx = width // 2 - (left + right + 1) // 2
+    return list(zip(dy.cpu().tolist(), dx.cpu().tolist()))
+
+
+def _reference_point_shifts(
+    points_xy: Sequence[Tuple[float, float]],
+    *,
+    image_size: Tuple[int, int],
+    latent_size: Tuple[int, int],
+) -> List[Tuple[int, int]]:
+    image_h, image_w = image_size
+    latent_h, latent_w = latent_size
+    return [
+        (
+            latent_h // 2 - round(float(y) * latent_h / image_h),
+            latent_w // 2 - round(float(x) * latent_w / image_w),
+        )
+        for x, y in points_xy
+    ]
+
+
+def align_captured_attention_maps(
+    captured_maps: Mapping[Tuple[int, int], Iterable[CapturedLayerMap]],
+    shifts_by_timestep: Mapping[int, Sequence[Tuple[int, int]]],
+    *,
+    latent_size: Tuple[int, int],
+    image_size: Tuple[int, int],
+) -> Dict[Tuple[int, int], List[CapturedLayerMap]]:
+    """Return image-sized attention maps aligned with the original masks."""
+    image_h, image_w = image_size
+    latent_h, latent_w = latent_size
+    aligned: Dict[Tuple[int, int], List[CapturedLayerMap]] = {}
+    for key, layer_maps in captured_maps.items():
+        timestep, region_index = key
+        shifts = shifts_by_timestep.get(timestep)
+        if shifts is None or region_index >= len(shifts):
+            raise RuntimeError(f"Missing attention shift for timestep={timestep}, region={region_index}.")
+        dy, dx = shifts[region_index]
+        inverse_shift = (-round(dy * image_h / latent_h), -round(dx * image_w / latent_w))
+        aligned[key] = []
+        for layer_map in layer_maps:
+            values = F.interpolate(
+                layer_map.values.detach().float().cpu()[None, None],
+                size=image_size,
+                mode="bilinear",
+                align_corners=False,
+            )[0, 0].roll(shifts=inverse_shift, dims=(-2, -1))
+            aligned[key].append(CapturedLayerMap(
+                layer_name=layer_map.layer_name,
+                spatial_size=layer_map.spatial_size,
+                values=values,
+            ))
+    return aligned
+
+
+@contextmanager
+def _attention_maps_in_mask_frame(
+    captured_maps: MutableMapping[Tuple[int, int], List[CapturedLayerMap]],
+    timestep: int,
+    shifts_yx: Sequence[Tuple[int, int]],
+    *,
+    latent_size: Tuple[int, int],
+    image_size: Tuple[int, int],
+    layer_name: str | None = None,
+    layer_index: int | None = None,
+):
+    """Temporarily undo each region's latent roll before masked anchor selection.
+
+    Align after resizing to image resolution, as in the SDXL coordinate
+    revision. Restore native maps afterwards so capture diagnostics and memory
+    usage keep their original behavior. This also covers notebook-specific
+    overrides of the anchor selection method.
+    """
+
+    latent_h, latent_w = latent_size
+    image_h, image_w = image_size
+    original_maps: Dict[Tuple[int, int], List[CapturedLayerMap]] = {}
+    try:
+        for region_index, (dy, dx) in enumerate(shifts_yx):
+            key = (timestep, region_index)
+            if key not in captured_maps:
+                raise KeyError(f"Missing attention maps for timestep={timestep}, region={region_index}.")
+            original_maps[key] = captured_maps[key]
+            inverse_shift = (
+                -round(dy * image_h / latent_h),
+                -round(dx * image_w / latent_w),
+            )
+            aligned_maps = []
+            for index, layer_map in enumerate(original_maps[key]):
+                if (layer_name is not None and layer_map.layer_name != layer_name) or (
+                    layer_index is not None and index != layer_index
+                ):
+                    aligned_maps.append(layer_map)
+                    continue
+                values = F.interpolate(
+                    layer_map.values.detach().float().cpu()[None, None],
+                    size=image_size,
+                    mode="bilinear",
+                    align_corners=False,
+                )[0, 0]
+                aligned_maps.append(
+                    CapturedLayerMap(
+                        layer_name=layer_map.layer_name,
+                        spatial_size=layer_map.spatial_size,
+                        values=values.roll(shifts=inverse_shift, dims=(-2, -1)),
+                    )
+                )
+            captured_maps[key] = aligned_maps
+        yield
+    finally:
+        for key, layer_maps in original_maps.items():
+            captured_maps[key] = layer_maps
 
 
 def _shift_to_reference_points(
@@ -653,19 +793,11 @@ def _shift_to_reference_points(
             f"Expected {latents.shape[0]} reference points, got {len(points_xy)}."
         )
 
-    image_h, image_w = image_size
-    latent_h, latent_w = latents.shape[-2:]
-    shifts: List[Tuple[int, int]] = []
-    for x, y in points_xy:
-        # Pixel centers are mapped consistently from image coordinates to
-        # the VAE latent canvas. ``roll`` expects (dy, dx).
-        x_latent = round(float(x) * latent_w / image_w)
-        y_latent = round(float(y) * latent_h / image_h)
-        dy = latent_h // 2 - y_latent
-        dx = latent_w // 2 - x_latent
-        if reverse:
-            dy, dx = -dy, -dx
-        shifts.append((dy, dx))
+    shifts = _reference_point_shifts(
+        points_xy, image_size=image_size, latent_size=latents.shape[-2:]
+    )
+    if reverse:
+        shifts = [(-dy, -dx) for dy, dx in shifts]
 
     return torch.stack(
         [latent.roll(shifts=shift, dims=(-2, -1)) for latent, shift in zip(latents, shifts)],
@@ -676,9 +808,10 @@ def _shift_to_reference_points(
 class SemanticAnchorRuntime:
     """Runtime ablation of SemanticDraw's centering rule.
 
-    The original baseline file is never changed.  This runner faithfully
-    reproduces its SD1.5 denoising/mask-mixing loop for the experiment's input
-    protocol, with one controlled intervention:
+    The SD1.5 baseline source carries a background-region batch-count fix.
+    This runner uses that pipeline's mask, scheduler, and embedding methods
+    while reproducing its denoising/mask-mixing loop for the experiment's
+    input protocol, with one controlled intervention:
 
     * step 0 uses the baseline bbox-centering bootstrap exactly;
     * later steps either use no extra centering (``baseline``), bbox centers
@@ -707,6 +840,43 @@ class SemanticAnchorRuntime:
         # Optional CPU copies for qualitative inspection. They are disabled for
         # full runs unless a notebook explicitly requests artifacts.
         self.weight_masks: List[torch.Tensor | None] = []
+        self.attention_shifts: Dict[int, List[Tuple[int, int]]] = {}
+        self._attention_latent_size: Tuple[int, int] | None = None
+
+    def aligned_attention_maps(self) -> Dict[Tuple[int, int], List[CapturedLayerMap]]:
+        """Resize and undo each region's capture shift for mask-frame diagnostics.
+
+        The capture store keeps compact native maps. This method is called
+        after generation only when a notebook needs image-sized diagnostics.
+        """
+        if self._attention_latent_size is None:
+            raise RuntimeError("No generated attention shifts are available.")
+        return align_captured_attention_maps(
+            self.attention_capture.maps,
+            self.attention_shifts,
+            latent_size=self._attention_latent_size,
+            image_size=self.image_size,
+        )
+
+    def align_attention_heatmaps(
+        self, heatmaps: Mapping[Tuple[int, int], torch.Tensor]
+    ) -> Dict[Tuple[int, int], torch.Tensor]:
+        """Align already aggregated image-sized maps without retaining every layer."""
+        if self._attention_latent_size is None:
+            raise RuntimeError("No generated attention shifts are available.")
+        image_h, image_w = self.image_size
+        latent_h, latent_w = self._attention_latent_size
+        aligned = {}
+        for (timestep, region_index), heatmap in heatmaps.items():
+            shifts = self.attention_shifts.get(timestep)
+            if shifts is None or region_index >= len(shifts):
+                raise RuntimeError(f"Missing attention shift for timestep={timestep}, region={region_index}.")
+            if heatmap.shape[-2:] != self.image_size:
+                raise ValueError(f"Expected an image-sized attention map, got {heatmap.shape[-2:]}.")
+            dy, dx = shifts[region_index]
+            inverse_shift = (-round(dy * image_h / latent_h), -round(dx * image_w / latent_w))
+            aligned[(timestep, region_index)] = heatmap.roll(shifts=inverse_shift, dims=(-2, -1))
+        return aligned
 
     def _anchors_from_current_step(
         self,
@@ -881,6 +1051,8 @@ class SemanticAnchorRuntime:
         self.step_records = []
         self.weight_records = []
         self.weight_masks = []
+        self.attention_shifts = {}
+        self._attention_latent_size = (latent_h, latent_w)
 
         with torch.autocast("cuda"):
             for step_index, timestep in enumerate(pipeline.timesteps):
@@ -919,6 +1091,7 @@ class SemanticAnchorRuntime:
                 value.zero_()
                 count_all.zero_()
                 current_region_features: torch.Tensor | None = None
+                current_attention_shifts: List[Tuple[int, int]] | None = None
 
                 if step_index < bootstrap_steps:
                     selection_source = "baseline_bbox_bootstrap"
@@ -963,13 +1136,20 @@ class SemanticAnchorRuntime:
                         latent_view = (1 - fg_mask_view) * bg_latent + fg_mask_view * latent_view
                         from util import shift_to_mask_bbox_center
                         latent_view = shift_to_mask_bbox_center(latent_view, fg_mask_view, reverse=True)
+                        current_attention_shifts = _mask_bbox_center_shifts(fg_mask_view[1:])
                     elif mode == "bbox_control":
                         from util import shift_to_mask_bbox_center
                         # The first entry is the background mask; only actual
                         # object regions receive repeated geometric centering.
                         foreground_latent = shift_to_mask_bbox_center(latent_view[1:], fg_mask_view[1:], reverse=True)
                         latent_view = torch.cat([latent_view[:1], foreground_latent], dim=0)
+                        current_attention_shifts = _mask_bbox_center_shifts(fg_mask_view[1:])
                     elif mode in {"semantic_anchor", "semantic_topk_anchor"}:
+                        current_attention_shifts = _reference_point_shifts(
+                            selected_points,
+                            image_size=self.image_size,
+                            latent_size=latent_view.shape[-2:],
+                        )
                         foreground_latent = _shift_to_reference_points(
                             latent_view[1:],
                             selected_points,
@@ -977,6 +1157,10 @@ class SemanticAnchorRuntime:
                             reverse=False,
                         )
                         latent_view = torch.cat([latent_view[:1], foreground_latent], dim=0)
+
+                    if current_attention_shifts is None:
+                        current_attention_shifts = [(0, 0)] * len(foreground_masks)
+                    self.attention_shifts[int(timestep.item())] = current_attention_shifts
 
                     noise_pred = pipeline.unet(
                         torch.cat([latent_view] * 2), timestep, encoder_hidden_states=text_embeds
@@ -1040,13 +1224,27 @@ class SemanticAnchorRuntime:
                     anchor_kwargs["layer_name"] = attention_layer_name
                 if attention_layer_index is not None:
                     anchor_kwargs["layer_index"] = attention_layer_index
-                current_anchors = self._anchors_from_current_step(
-                    int(timestep.item()),
-                    foreground_masks,
-                    strategy=("topk_projected_centroid" if mode == "semantic_topk_anchor" else "argmax"),
-                    topk_percent=topk_percent,
-                    **anchor_kwargs,
-                )
+                alignment_context = nullcontext()
+                if mode in {"semantic_anchor", "semantic_topk_anchor"}:
+                    if current_attention_shifts is None or len(current_attention_shifts) != len(foreground_masks):
+                        raise RuntimeError("Missing foreground shifts for attention coordinate alignment.")
+                    alignment_context = _attention_maps_in_mask_frame(
+                        self.attention_capture.store.maps,
+                        int(timestep.item()),
+                        current_attention_shifts,
+                        latent_size=(latent_h, latent_w),
+                        image_size=self.image_size,
+                        layer_name=attention_layer_name,
+                        layer_index=attention_layer_index,
+                    )
+                with alignment_context:
+                    current_anchors = self._anchors_from_current_step(
+                        int(timestep.item()),
+                        foreground_masks,
+                        strategy=("topk_projected_centroid" if mode == "semantic_topk_anchor" else "argmax"),
+                        topk_percent=topk_percent,
+                        **anchor_kwargs,
+                    )
                 if mode == "bbox_control":
                     # WM-01 is the geometric control: its spatial Gaussian is
                     # centered at the same bbox-center reference used by the

@@ -81,6 +81,7 @@ def run_evaluation(config: MetricEvaluationConfig) -> dict[str, Any]:
             compute_is="is" in selected_metrics,
             fid_feature=config.fid_feature,
             is_splits=min(config.is_splits, max(1, effective_size)),
+            metric_seed=config.metric_seed,
         )
 
     clip = None
@@ -185,7 +186,11 @@ def run_evaluation(config: MetricEvaluationConfig) -> dict[str, Any]:
 
     metrics: dict[str, float] = {}
     if "time" in selected_metrics:
-        metrics.update(summarize_generation_time(summary_rows))
+        metrics.update(summarize_generation_time(
+            summary_index[row["sample_id"]]
+            for row in evaluated_rows
+            if row["sample_id"] in summary_index
+        ))
     if inception is not None:
         metrics.update(inception.compute())
     if clip is not None:
@@ -199,6 +204,9 @@ def run_evaluation(config: MetricEvaluationConfig) -> dict[str, Any]:
         "model_family": config.model_family,
         "target_size": list(target_hw),
         "selected_metrics": sorted(selected_metrics),
+        "metric_seed": config.metric_seed,
+        "mask_cache_enabled": bool(config.cache_resized_masks),
+        "mask_cache_dir": str(config.cache_dir) if config.cache_resized_masks else None,
         "device": str(device),
         "num_manifest_records": dataset_size,
         "num_evaluated": len(evaluated_rows),

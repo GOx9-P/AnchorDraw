@@ -33,12 +33,16 @@ class MetricEvaluationConfig:
     batch_size: int = 8
     num_workers: int = 0
     pin_memory: bool = True
-    cache_resized_masks: bool = True
+    # Metric runs must decode masks from the verified COCO annotations unless
+    # the caller supplies a run-local cache explicitly. The shared Ours/cache
+    # key does not encode the annotation file's contents.
+    cache_resized_masks: bool = False
     cache_dir: Optional[PathLike] = Path("Ours") / "cache"
 
     device: str = "auto"
     fid_feature: int = 2048
     is_splits: int = 10
+    metric_seed: int = 2024
     clip_model_name: str = "ViT-B-32"
     clip_pretrained: str = "openai"
     clip_batch_size: int = 32
@@ -110,6 +114,8 @@ class MetricEvaluationConfig:
             raise ValueError("clip_batch_size must be positive")
         if self.is_splits <= 0:
             raise ValueError("is_splits must be positive")
+        if self.metric_seed < 0:
+            raise ValueError("metric_seed must be non-negative")
         if self.foreground_crop_padding_ratio < 0:
             raise ValueError("foreground_crop_padding_ratio must be non-negative")
 

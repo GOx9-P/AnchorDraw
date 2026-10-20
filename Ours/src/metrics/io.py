@@ -73,9 +73,10 @@ def candidate_generated_paths(
         generated_path = summary_row.get("generated_path")
         if generated_path:
             path = Path(str(generated_path))
-            add(path)
-            if generated_dir is not None:
-                add(generated_dir / path.name)
+            if path.name.endswith("_generated.png"):
+                # An explicit generated_dir defines the run being evaluated.
+                # Archived absolute paths in a summary must not win over it.
+                add(path if generated_dir is None else generated_dir / path.name)
 
     if generated_dir is not None:
         if global_index is not None:
@@ -84,9 +85,7 @@ def candidate_generated_paths(
 
         for pattern in (
             f"*{sample_id}*_generated.png",
-            f"*{sample_id}*.png",
             f"*{image_id:012d}*_generated.png",
-            f"*{image_id:012d}*.png",
         ):
             for path in sorted(generated_dir.glob(pattern)):
                 add(path)
@@ -100,10 +99,20 @@ def resolve_generated_image_path(
     summary_index: Mapping[str, JsonDict],
     global_index: Optional[int] = None,
 ) -> Optional[Path]:
-    for path in candidate_generated_paths(record, generated_dir, summary_index, global_index):
-        if path.exists():
-            return path
-    return None
+    candidates = candidate_generated_paths(record, generated_dir, summary_index, global_index)
+    summary_row = summary_index.get(str(record["sample_id"]))
+    if summary_row is not None and str(summary_row.get("generated_path", "")).endswith("_generated.png"):
+        # A summary entry identifies one image explicitly; unrelated files
+        # sharing the COCO image_id must not make this sample ambiguous.
+        if candidates and candidates[0].is_file():
+            return candidates[0]
+    existing = [path for path in candidates if path.is_file()]
+    if len(existing) > 1:
+        raise ValueError(
+            f"Ambiguous generated images for sample {record['sample_id']}: "
+            f"{[str(path) for path in existing]}"
+        )
+    return existing[0] if existing else None
 
 
 def load_rgb_image(path: Path) -> Image.Image:
