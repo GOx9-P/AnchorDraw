@@ -59,11 +59,13 @@ class MultiDiffusionSD3FlashFlowMatch:
         device: torch.device,
         model_id: str = "stabilityai/stable-diffusion-3-medium-diffusers",
         flash_sd3_repo_id: str = "jasperai/flash-sd3",
+        model_revision: str | None = None,
+        flash_sd3_revision: str | None = None,
         dtype: torch.dtype = torch.float16,
         t_index_list: Sequence[int] = (0, 4, 12, 25, 37),
         schedule_steps: int = 50,
         safe_vae: bool = True,
-        enable_attention_slicing: bool = True,
+        enable_attention_slicing: bool = False,
         enable_vae_slicing: bool = True,
         view_window_size: int = 128,
         view_stride: int = 128,
@@ -91,8 +93,11 @@ class MultiDiffusionSD3FlashFlowMatch:
             model_id,
             subfolder="transformer",
             torch_dtype=dtype,
+            revision=model_revision,
         ).to(device)
-        transformer = PeftModel.from_pretrained(transformer, flash_sd3_repo_id).to(device)
+        transformer = PeftModel.from_pretrained(
+            transformer, flash_sd3_repo_id, revision=flash_sd3_revision
+        ).to(device)
 
         self.pipe = StableDiffusion3Pipeline.from_pretrained(
             model_id,
@@ -100,14 +105,19 @@ class MultiDiffusionSD3FlashFlowMatch:
             torch_dtype=dtype,
             text_encoder_3=None,
             tokenizer_3=None,
+            revision=model_revision,
         ).to(device)
         self.pipe.scheduler = FlashFlowMatchEulerDiscreteScheduler.from_pretrained(
             model_id,
             subfolder="scheduler",
+            revision=model_revision,
         )
 
-        if enable_attention_slicing and hasattr(self.pipe, "enable_attention_slicing"):
-            self.pipe.enable_attention_slicing()
+        if enable_attention_slicing:
+            raise ValueError(
+                "SD3 uses joint attention. Generic attention slicing can replace its "
+                "processor with one that does not return the image/context pair."
+            )
         if enable_vae_slicing and hasattr(self.pipe, "enable_vae_slicing"):
             self.pipe.enable_vae_slicing()
 
@@ -183,7 +193,7 @@ class MultiDiffusionSD3FlashFlowMatch:
             self.vae.to(dtype=torch.float32)
         try:
             posterior = self.vae.encode(images.to(device=self.device, dtype=encode_dtype)).latent_dist
-            latents = posterior.sample() * self.latent_scaling_factor
+            latents = (posterior.sample() - self.latent_shift_factor) * self.latent_scaling_factor
             self._assert_finite("encoded VAE latents", latents)
         finally:
             if self.safe_vae and original_dtype != torch.float32:

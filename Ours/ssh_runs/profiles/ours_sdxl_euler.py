@@ -43,6 +43,7 @@ RUN_MANIFEST = REPO_ROOT / 'Ours/data_manifests/coco_val2017_multidiffusion_coco
 COCO_ROOT = Path(os.environ.get('COCO_ROOT', str(WORK_DIR / 'COCO')))
 OUTPUT_DIR = WORK_DIR / 'anchordraw_sdxl_euler_w03_l04_sigmad4_full1073_coord_aligned_r1'
 RUN_SAMPLES, BASE_SEED = 1073, 2024
+BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", str(BASE_SEED)))
 TARGET_SIZE, T_INDEX_LIST = (1024, 1024), [0, 4, 12, 25, 37]
 MASK_STD, MASK_STRENGTH, PREPROCESS_MASK_COVER_ALPHA = 0.0, 1.0, 0.0
 BOOTSTRAP_STEPS, GUIDANCE_SCALE = 1, 0.0
@@ -473,7 +474,7 @@ protocol = {
     'baseline_pipeline_sha256': hashlib.sha256(source.encode('utf-8')).hexdigest(),
     'manifest_sha256': hashlib.sha256(RUN_MANIFEST.read_bytes()).hexdigest(),
     'manifest_path': str(RUN_MANIFEST),
-    'num_samples': RUN_SAMPLES, 'seed_rule': '2024 + global_index',
+    'num_samples': RUN_SAMPLES, 'seed_rule': f'{BASE_SEED} + global_index',
     'model': 'stabilityai/stable-diffusion-xl-base-1.0',
     'student_checkpoint': 'ByteDance/SDXL-Lightning/sdxl_lightning_4step_unet.safetensors',
     'scheduler': type(smd.scheduler).__name__,
@@ -507,6 +508,7 @@ PROTOCOL_PATH.write_text(json.dumps(protocol, ensure_ascii=False, indent=2), enc
 print('[OK] Protocol frozen:', PROTOCOL_PATH)
 
 # --- Source notebook cell 11 ---
+failed_images = []
 # Sinh đúng 1073 ảnh AnchorDraw; checkpoint summary/audit theo từng mẫu.
 def weight_masks_for_available_regions(mask, features, anchors, has_background):
     # The SDXL baseline omits its background region when foreground masks cover the canvas.
@@ -553,184 +555,220 @@ print('[PASS] W03 background/no-background weighting gates.')
 summary_rows = []
 audit_rows = []
 for index, batch in enumerate(loader):
-    item = batch_item_to_semanticdraw_inputs(batch, 0)
-    assert item['metadata']['sample_id'] == manifest_rows[index]['sample_id']
-    seed = BASE_SEED + index
-    seed_everything(seed)
-    method_tic = time.perf_counter()
-    indices, tokenizer_positions = token_indices_for(item)
-    capture.configure(indices)
-    state = {'previous_anchors': None, 'previous_features': None, 'has_background': None,
-             'current_attention_shifts_latent': None, 'current_attention_latent_size': None,
-             'alignment_applied_steps': 0, 'step_rows': [], 'mask_rows': [],
-             'shift_count': 0, 'nonzero_shift_steps': 0}
-    foreground_masks = item['masks'].float().cpu()
+    retry_overhead_sec = 0.0
+    for attempt in range(1, 4):
+        attempt_started = time.perf_counter()
+        tracked_lists = ('summary_rows', 'audit_rows')
+        list_lengths_before = {name: len(globals()[name]) for name in tracked_lists}
+        try:
+            item = batch_item_to_semanticdraw_inputs(batch, 0)
+            assert item['metadata']['sample_id'] == manifest_rows[index]['sample_id']
+            seed = BASE_SEED + index
+            seed_everything(seed)
+            method_tic = time.perf_counter()
+            indices, tokenizer_positions = token_indices_for(item)
+            capture.configure(indices)
+            state = {'previous_anchors': None, 'previous_features': None, 'has_background': None,
+                     'current_attention_shifts_latent': None, 'current_attention_latent_size': None,
+                     'alignment_applied_steps': 0, 'step_rows': [], 'mask_rows': [],
+                     'shift_count': 0, 'nonzero_shift_steps': 0}
+            foreground_masks = item['masks'].float().cpu()
 
-    def mask_hook(mask, step, timestep):
-        if step == 0:
-            state['has_background'] = (mask.shape[0] == len(item['prompts']) + 1)
-            assert mask.shape[0] == len(item['prompts']) + int(state['has_background'])
-            return mask
-        assert state['has_background'] is not None
-        assert state['previous_anchors'] is not None and state['previous_features'] is not None
-        weighted, record = weight_masks_for_available_regions(
-            mask, state['previous_features'], state['previous_anchors'], state['has_background'])
-        state['mask_rows'].append({
-            'step': int(step), 'timestep': int(timestep.item()),
-            'mean_abs_delta': float((weighted.float() - mask.float()).abs().mean().item()),
-            'overlap_pixels': int(record.overlap_pixel_count),
-            'semantic_sigmas': [float(v) for v in record.semantic_sigma_by_region]})
-        return weighted
+            def mask_hook(mask, step, timestep):
+                if step == 0:
+                    state['has_background'] = (mask.shape[0] == len(item['prompts']) + 1)
+                    assert mask.shape[0] == len(item['prompts']) + int(state['has_background'])
+                    return mask
+                assert state['has_background'] is not None
+                assert state['previous_anchors'] is not None and state['previous_features'] is not None
+                weighted, record = weight_masks_for_available_regions(
+                    mask, state['previous_features'], state['previous_anchors'], state['has_background'])
+                state['mask_rows'].append({
+                    'step': int(step), 'timestep': int(timestep.item()),
+                    'mean_abs_delta': float((weighted.float() - mask.float()).abs().mean().item()),
+                    'overlap_pixels': int(record.overlap_pixel_count),
+                    'semantic_sigmas': [float(v) for v in record.semantic_sigma_by_region]})
+                return weighted
 
-    def pre_unet_hook(latent, mask, step, timestep):
-        capture.store.set_timestep(timestep)
-        background_count = int(state['has_background'])
-        state['current_attention_latent_size'] = tuple(latent.shape[-2:])
-        if step == 0:
-            state['current_attention_shifts_latent'] = bootstrap_foreground_shifts(
-                mask, background_count)
-            assert len(state['current_attention_shifts_latent']) == len(item['prompts'])
-            return latent
-        points = state['previous_anchors']
-        assert points is not None and len(points) == latent.shape[0] - background_count
-        h, w = latent.shape[-2:]
-        state['current_attention_shifts_latent'] = semantic_foreground_shifts(
-            points, (h, w), TARGET_SIZE)
-        if any(round(x*w/TARGET_SIZE[1]) != w//2 or round(y*h/TARGET_SIZE[0]) != h//2 for x, y in points):
-            state['nonzero_shift_steps'] += 1
-        shifted = _shift_to_reference_points(
-            latent[background_count:], points, image_size=TARGET_SIZE, reverse=False)
-        state['shift_count'] += 1
-        return torch.cat([latent[:background_count], shifted], dim=0)
+            def pre_unet_hook(latent, mask, step, timestep):
+                capture.store.set_timestep(timestep)
+                background_count = int(state['has_background'])
+                state['current_attention_latent_size'] = tuple(latent.shape[-2:])
+                if step == 0:
+                    state['current_attention_shifts_latent'] = bootstrap_foreground_shifts(
+                        mask, background_count)
+                    assert len(state['current_attention_shifts_latent']) == len(item['prompts'])
+                    return latent
+                points = state['previous_anchors']
+                assert points is not None and len(points) == latent.shape[0] - background_count
+                h, w = latent.shape[-2:]
+                state['current_attention_shifts_latent'] = semantic_foreground_shifts(
+                    points, (h, w), TARGET_SIZE)
+                if any(round(x*w/TARGET_SIZE[1]) != w//2 or round(y*h/TARGET_SIZE[0]) != h//2 for x, y in points):
+                    state['nonzero_shift_steps'] += 1
+                shifted = _shift_to_reference_points(
+                    latent[background_count:], points, image_size=TARGET_SIZE, reverse=False)
+                state['shift_count'] += 1
+                return torch.cat([latent[:background_count], shifted], dim=0)
 
-    def post_euler_hook(student_next, student_noisy, noise_pred, step, timestep):
-        assert student_next.shape == student_noisy.shape == noise_pred.shape
-        if step == 0:
-            return student_next
-        background_count = int(state['has_background'])
-        restored = _shift_to_reference_points(
-            student_next[background_count:], state['previous_anchors'],
-            image_size=TARGET_SIZE, reverse=True)
-        return torch.cat([student_next[:background_count], restored], dim=0)
+            def post_euler_hook(student_next, student_noisy, noise_pred, step, timestep):
+                assert student_next.shape == student_noisy.shape == noise_pred.shape
+                if step == 0:
+                    return student_next
+                background_count = int(state['has_background'])
+                restored = _shift_to_reference_points(
+                    student_next[background_count:], state['previous_anchors'],
+                    image_size=TARGET_SIZE, reverse=True)
+                return torch.cat([student_next[:background_count], restored], dim=0)
 
-    def post_region_hook(latent, step, timestep):
-        # Sau baseline bootstrap-unshift (step 0) hoặc semantic-unshift (step >=1).
-        t = int(timestep.item())
-        current = {}
-        for region in range(len(item['prompts'])):
-            key = (t, region)
-            maps = capture.maps.get(key, [])
-            assert len(maps) == 1, (key, len(maps))
-            current[key] = maps
-        attention = aggregate_attention_maps(
-            current, TARGET_SIZE, layer_name=LAYER_NAME)
-        shifts = state['current_attention_shifts_latent']
-        latent_size = state['current_attention_latent_size']
-        assert shifts is not None and len(shifts) == len(item['prompts'])
-        assert latent_size is not None
-        anchors, native = [], []
-        for region, mask in enumerate(foreground_masks):
-            aligned_attention = attention_in_mask_frame(
-                attention[(t, region)], shifts[region], latent_size, TARGET_SIZE)
-            measurement = compute_anchor_measurements(
-                aligned_attention, mask, topk_percent=TOPK_PERCENT)
-            x, y = measurement['topk_anchor_x'], measurement['topk_anchor_y']
-            assert measurement['topk_anchor_inside_mask']
-            anchors.append((float(x), float(y)))
-            native.append(int(current[(t, region)][0].spatial_size))
-        state['previous_anchors'] = anchors
-        state['previous_features'] = latent[int(state['has_background']):].detach().clone()
-        assert state['previous_features'].shape[0] == len(anchors)
-        state['alignment_applied_steps'] += 1
-        state['step_rows'].append({
-            'step': int(step), 'timestep': t,
-            'attention_shifts_latent_yx': shifts,
-            'anchors_xy_image': anchors, 'native_attention_sizes': native})
-        return latent
+            def post_region_hook(latent, step, timestep):
+                # Sau baseline bootstrap-unshift (step 0) hoặc semantic-unshift (step >=1).
+                t = int(timestep.item())
+                current = {}
+                for region in range(len(item['prompts'])):
+                    key = (t, region)
+                    maps = capture.maps.get(key, [])
+                    assert len(maps) == 1, (key, len(maps))
+                    current[key] = maps
+                attention = aggregate_attention_maps(
+                    current, TARGET_SIZE, layer_name=LAYER_NAME)
+                shifts = state['current_attention_shifts_latent']
+                latent_size = state['current_attention_latent_size']
+                assert shifts is not None and len(shifts) == len(item['prompts'])
+                assert latent_size is not None
+                anchors, native = [], []
+                for region, mask in enumerate(foreground_masks):
+                    aligned_attention = attention_in_mask_frame(
+                        attention[(t, region)], shifts[region], latent_size, TARGET_SIZE)
+                    measurement = compute_anchor_measurements(
+                        aligned_attention, mask, topk_percent=TOPK_PERCENT)
+                    x, y = measurement['topk_anchor_x'], measurement['topk_anchor_y']
+                    assert measurement['topk_anchor_inside_mask']
+                    anchors.append((float(x), float(y)))
+                    native.append(int(current[(t, region)][0].spatial_size))
+                state['previous_anchors'] = anchors
+                state['previous_features'] = latent[int(state['has_background']):].detach().clone()
+                assert state['previous_features'].shape[0] == len(anchors)
+                state['alignment_applied_steps'] += 1
+                state['step_rows'].append({
+                    'step': int(step), 'timestep': t,
+                    'attention_shifts_latent_yx': shifts,
+                    'anchors_xy_image': anchors, 'native_attention_sizes': native})
+                return latent
 
 
-    smd._anchor_mask_hook = mask_hook
-    smd._anchor_pre_unet_hook = pre_unet_hook
-    smd._anchor_post_euler_hook = post_euler_hook
-    smd._anchor_post_region_hook = post_region_hook
-    try:
-        attach_capture()
-        seed_everything(seed)
-        tic = time.perf_counter()
-        generated = call_hooked(item)
-        elapsed = time.perf_counter() - tic
-    finally:
-        detach_capture()
-    generated = generated.convert('RGB')
-    method_wall_sec = time.perf_counter() - method_tic
-    assert generated.size == (TARGET_SIZE[1], TARGET_SIZE[0])
-    assert len(state['step_rows']) == len(T_INDEX_LIST)
-    assert state['alignment_applied_steps'] == len(T_INDEX_LIST)
-    assert len(state['mask_rows']) == len(T_INDEX_LIST) - BOOTSTRAP_STEPS
-    assert state['shift_count'] == len(T_INDEX_LIST) - BOOTSTRAP_STEPS
+            smd._anchor_mask_hook = mask_hook
+            smd._anchor_pre_unet_hook = pre_unet_hook
+            smd._anchor_post_euler_hook = post_euler_hook
+            smd._anchor_post_region_hook = post_region_hook
+            try:
+                attach_capture()
+                seed_everything(seed)
+                tic = time.perf_counter()
+                generated = call_hooked(item)
+                elapsed = time.perf_counter() - tic + retry_overhead_sec
+            finally:
+                detach_capture()
+            generated = generated.convert('RGB')
+            method_wall_sec = time.perf_counter() - method_tic + retry_overhead_sec
+            assert generated.size == (TARGET_SIZE[1], TARGET_SIZE[0])
+            assert len(state['step_rows']) == len(T_INDEX_LIST)
+            assert state['alignment_applied_steps'] == len(T_INDEX_LIST)
+            assert len(state['mask_rows']) == len(T_INDEX_LIST) - BOOTSTRAP_STEPS
+            assert state['shift_count'] == len(T_INDEX_LIST) - BOOTSTRAP_STEPS
 
-    # Save first. Pixel statistics are advisory and must never discard a measured sample.
-    generated_path = GENERATED_DIR / f'{index:04d}_{item["metadata"]["sample_id"]}_generated.png'
-    generated.save(generated_path)
-    pixels = np.asarray(generated)
-    image_min, image_max = int(pixels.min()), int(pixels.max())
-    image_mean, image_std = float(pixels.mean()), float(pixels.std())
-    quality_flags = []
-    if image_max <= 5 and image_std <= 1.0:
-        quality_flags.append('near_black_candidate')
-    if image_min == 0 and image_max == 255 and 95 <= image_mean <= 160 and image_std >= 90.0:
-        quality_flags.append('high_contrast_candidate')
-    mean_mask_delta = sum(m['mean_abs_delta'] for m in state['mask_rows']) / len(state['mask_rows'])
-    row = {
-        'index': index, 'sample_id': item['metadata']['sample_id'],
-        'image_id': int(item['metadata']['image_id']),
-        'file_name': item['metadata']['file_name'],
-        'seed': seed, 'model_family': 'sdxl', 'sampler': 'euler_discrete',
-        'scheduler': type(smd.scheduler).__name__, 'timestep_spacing': 'trailing',
-        'lightning_repo': 'ByteDance/SDXL-Lightning',
-        'lightning_weight': 'sdxl_lightning_4step_unet.safetensors',
-        'plain_num_inference_steps': 4,
-        'semanticdraw_num_inference_steps_arg': None,
-        'semanticdraw_t_index_list': T_INDEX_LIST,
-        'guidance_scale': GUIDANCE_SCALE, 'bootstrap_steps': BOOTSTRAP_STEPS,
-        'num_regions_including_background': len(item['prompts']) + int(state['has_background']),
-        'has_background_region': bool(state['has_background']),
-        'elapsed_sec': elapsed, 'method_wall_sec': method_wall_sec,
-        'generated_path': str(generated_path),
-        'image_min': image_min, 'image_max': image_max,
-        'image_mean': image_mean, 'image_std': image_std,
-        'quality_flags': quality_flags,
-        'method_id': protocol['method_id'], 'distillation_pp': False,
-    }
-    summary_rows.append(row)
-    audit_rows.append({
-        'index': index, 'sample_id': row['sample_id'], 'seed': seed,
-        'tokenizer_positions': tokenizer_positions,
-        'nonzero_shift_steps': state['nonzero_shift_steps'],
-        'has_background_region': bool(state['has_background']),
-        'attention_alignment_applied_steps': state['alignment_applied_steps'],
-        'attention_shifts_latent_yx_by_step': [
-            step_row['attention_shifts_latent_yx'] for step_row in state['step_rows']],
-        'anchors_xy_image_by_step': [
-            step_row['anchors_xy_image'] for step_row in state['step_rows']],
-        'mean_mask_abs_delta': mean_mask_delta,
-        'quality_flags': quality_flags,
-        'native_attention_sizes': sorted(set(
-            size for step in state['step_rows'] for size in step['native_attention_sizes'])),
-    })
-    RUN_SUMMARY_PATH.write_text(
-        json.dumps(summary_rows, ensure_ascii=False, indent=2), encoding='utf-8')
-    AUDIT_PATH.write_text(
-        '\n'.join(json.dumps(v, ensure_ascii=False) for v in audit_rows) + '\n',
-        encoding='utf-8')
-    print(f'[{index+1}/{RUN_SAMPLES}] {row["sample_id"]} | mask_delta={mean_mask_delta:.6f}'
-          f' | call={elapsed:.2f}s | method={method_wall_sec:.2f}s')
-    if quality_flags:
-        print(f'[AUDIT] Image {index} flagged for review (not excluded): {quality_flags}')
-    if index < 8:
-        display(generated.resize((384, 384)))
-    del generated, pixels, batch, item
-    torch.cuda.empty_cache()
+            # Save first. Pixel statistics are advisory and must never discard a measured sample.
+            generated_path = GENERATED_DIR / f'{index:04d}_{item["metadata"]["sample_id"]}_generated.png'
+            generated.save(generated_path)
+            pixels = np.asarray(generated)
+            image_min, image_max = int(pixels.min()), int(pixels.max())
+            image_mean, image_std = float(pixels.mean()), float(pixels.std())
+            quality_flags = []
+            if image_max <= 5 and image_std <= 1.0:
+                quality_flags.append('near_black_candidate')
+            if image_min == 0 and image_max == 255 and 95 <= image_mean <= 160 and image_std >= 90.0:
+                quality_flags.append('high_contrast_candidate')
+            mean_mask_delta = sum(m['mean_abs_delta'] for m in state['mask_rows']) / len(state['mask_rows'])
+            row = {
+                'index': index, 'sample_id': item['metadata']['sample_id'],
+                'image_id': int(item['metadata']['image_id']),
+                'file_name': item['metadata']['file_name'],
+                'seed': seed, 'model_family': 'sdxl', 'sampler': 'euler_discrete',
+                'scheduler': type(smd.scheduler).__name__, 'timestep_spacing': 'trailing',
+                'lightning_repo': 'ByteDance/SDXL-Lightning',
+                'lightning_weight': 'sdxl_lightning_4step_unet.safetensors',
+                'plain_num_inference_steps': 4,
+                'semanticdraw_num_inference_steps_arg': None,
+                'semanticdraw_t_index_list': T_INDEX_LIST,
+                'guidance_scale': GUIDANCE_SCALE, 'bootstrap_steps': BOOTSTRAP_STEPS,
+                'num_regions_including_background': len(item['prompts']) + int(state['has_background']),
+                'has_background_region': bool(state['has_background']),
+                'elapsed_sec': elapsed, 'method_wall_sec': method_wall_sec,
+                'generated_path': str(generated_path),
+                'image_min': image_min, 'image_max': image_max,
+                'image_mean': image_mean, 'image_std': image_std,
+                'quality_flags': quality_flags,
+                'method_id': protocol['method_id'], 'distillation_pp': False,
+            }
+            summary_rows.append(row)
+            audit_rows.append({
+                'index': index, 'sample_id': row['sample_id'], 'seed': seed,
+                'tokenizer_positions': tokenizer_positions,
+                'nonzero_shift_steps': state['nonzero_shift_steps'],
+                'has_background_region': bool(state['has_background']),
+                'attention_alignment_applied_steps': state['alignment_applied_steps'],
+                'attention_shifts_latent_yx_by_step': [
+                    step_row['attention_shifts_latent_yx'] for step_row in state['step_rows']],
+                'anchors_xy_image_by_step': [
+                    step_row['anchors_xy_image'] for step_row in state['step_rows']],
+                'mean_mask_abs_delta': mean_mask_delta,
+                'quality_flags': quality_flags,
+                'native_attention_sizes': sorted(set(
+                    size for step in state['step_rows'] for size in step['native_attention_sizes'])),
+            })
+            RUN_SUMMARY_PATH.write_text(
+                json.dumps(summary_rows, ensure_ascii=False, indent=2), encoding='utf-8')
+            AUDIT_PATH.write_text(
+                '\n'.join(json.dumps(v, ensure_ascii=False) for v in audit_rows) + '\n',
+                encoding='utf-8')
+            print(f'[{index+1}/{RUN_SAMPLES}] {row["sample_id"]} | mask_delta={mean_mask_delta:.6f}'
+                  f' | call={elapsed:.2f}s | method={method_wall_sec:.2f}s')
+            if quality_flags:
+                print(f'[AUDIT] Image {index} flagged for review (not excluded): {quality_flags}')
+            if index < 8:
+                display(generated.resize((384, 384)))
+            del generated, pixels, batch, item
+            torch.cuda.empty_cache()
+        except Exception as exc:
+            import traceback
+            rolled_back = any(len(globals()[name]) > list_lengths_before[name] for name in tracked_lists)
+            for name in tracked_lists:
+                del globals()[name][list_lengths_before[name]:]
+            if rolled_back:
+                try:
+                    RUN_SUMMARY_PATH.write_text(json.dumps(summary_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+                    AUDIT_PATH.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in audit_rows) + "\n", encoding="utf-8")
+                except Exception as checkpoint_error:
+                    print(f"[CHECKPOINT ERROR] index={index}: {checkpoint_error}", flush=True)
+            attempt_elapsed_sec = time.perf_counter() - attempt_started
+            retry_overhead_sec += attempt_elapsed_sec
+            failure = {"index": index, "seed": BASE_SEED + index,
+                       "sample_id": str(locals().get("sample_id", "")),
+                       "attempt": attempt, "attempt_elapsed_sec": attempt_elapsed_sec,
+                       "error": repr(exc),
+                       "traceback": traceback.format_exc()}
+            with (WORK_DIR / "failed_images.jsonl").open("a", encoding="utf-8") as output:
+                output.write(json.dumps(failure, ensure_ascii=False) + "\n")
+            print(f"[IMAGE ERROR] index={index} attempt={attempt}/3: {exc}", flush=True)
+            if attempt == 3:
+                failed_images.append(index)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        else:
+            break
+
+if failed_images:
+    raise RuntimeError(f"Run incomplete: {len(failed_images)} manifest indices failed after three attempts: {failed_images}")
 
 assert len(summary_rows) == len(audit_rows) == RUN_SAMPLES
 assert [r['sample_id'] for r in summary_rows] == [r['sample_id'] for r in manifest_rows]

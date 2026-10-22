@@ -69,6 +69,7 @@ SAVE_EXPORT_TO_GOOGLE_DRIVE = False
 DRIVE_RESULTS_ROOT = Path(str(WORK_DIR / 'drive/MyDrive/SemanticDraw_Results'))
 
 BASE_SEED = 2024
+BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", str(BASE_SEED)))
 TARGET_SIZE = (1024, 1024)
 MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 NEGATIVE_PROMPT = "artifacts, blurry, smooth texture, bad quality, distortions, unrealistic, distorted image, low quality"
@@ -437,6 +438,7 @@ else:
     print("[INFO] Sanity check skipped.")
 
 # --- Source notebook cell 12 ---
+failed_images = []
 # Chạy generation cho từng sample trong manifest.
 existing_summary = []
 if SKIP_EXISTING and RUN_SUMMARY_PATH.exists():
@@ -456,91 +458,125 @@ for batch_index, batch in enumerate(loader):
     print(f"[BATCH] {batch_index + 1}/{len(loader)} - {current_batch_size} sample(s)")
 
     for local_index in range(current_batch_size):
-        payload = make_multidiffusion_payload(batch, local_index)
-        stem = f"{global_index:04d}_{payload['sample_id']}"
-        generated_path = GENERATED_DIR / f"{stem}_generated.png"
-        overlay_path = OVERLAY_DIR / f"{stem}_overlay.png"
+        retry_overhead_sec = 0.0
+        for attempt in range(1, 4):
+            attempt_started = time.perf_counter()
+            tracked_lists = ('summary',)
+            list_lengths_before = {name: len(globals()[name]) for name in tracked_lists}
+            try:
+                payload = make_multidiffusion_payload(batch, local_index)
+                stem = f"{global_index:04d}_{payload['sample_id']}"
+                generated_path = GENERATED_DIR / f"{stem}_generated.png"
+                overlay_path = OVERLAY_DIR / f"{stem}_overlay.png"
 
-        if SKIP_EXISTING and global_index in completed_indices and generated_path.exists():
-            print(f"[SKIP] index={global_index} sample_id={payload['sample_id']}")
-            global_index += 1
-            continue
+                if SKIP_EXISTING and global_index in completed_indices and generated_path.exists():
+                    print(f"[SKIP] index={global_index} sample_id={payload['sample_id']}")
+                    break
 
-        seed = BASE_SEED + global_index
-        seed_everything(seed)
+                seed = BASE_SEED + global_index
+                seed_everything(seed)
 
-        original = resize_original(payload["image"])
-        overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"][1:])
+                original = resize_original(payload["image"])
+                overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"][1:])
 
-        start = time.perf_counter()
-        generated = md_ddim.generate(
-            masks=payload["masks"],
-            prompts=payload["prompts"],
-            negative_prompts=payload["negative_prompts"],
-            height=TARGET_SIZE[0],
-            width=TARGET_SIZE[1],
-            num_inference_steps=DDIM_NUM_INFERENCE_STEPS,
-            guidance_scale=DDIM_GUIDANCE_SCALE,
-            bootstrapping=BOOTSTRAPPING,
-            view_window_size=VIEW_WINDOW_SIZE,
-            view_stride=VIEW_STRIDE,
-            show_progress=True,
-        ).convert("RGB")
-        elapsed = time.perf_counter() - start
+                start = time.perf_counter()
+                generated = md_ddim.generate(
+                    masks=payload["masks"],
+                    prompts=payload["prompts"],
+                    negative_prompts=payload["negative_prompts"],
+                    height=TARGET_SIZE[0],
+                    width=TARGET_SIZE[1],
+                    num_inference_steps=DDIM_NUM_INFERENCE_STEPS,
+                    guidance_scale=DDIM_GUIDANCE_SCALE,
+                    bootstrapping=BOOTSTRAPPING,
+                    view_window_size=VIEW_WINDOW_SIZE,
+                    view_stride=VIEW_STRIDE,
+                    show_progress=True,
+                ).convert("RGB")
+                elapsed = time.perf_counter() - start + retry_overhead_sec
 
-        stats = image_stats(generated)
-        if is_near_black_image(generated):
-            raise RuntimeError(f"Generated image at index {global_index} is nearly black: {stats}")
-        if is_static_noise_image(generated):
-            print(f"[WARN] Generated image at index {global_index} looks static/noisy: {stats}")
+                stats = image_stats(generated)
+                if is_near_black_image(generated):
+                    raise RuntimeError(f"Generated image at index {global_index} is nearly black: {stats}")
+                if is_static_noise_image(generated):
+                    print(f"[WARN] Generated image at index {global_index} looks static/noisy: {stats}")
 
-        generated.save(generated_path)
-        overlay.save(overlay_path)
+                generated.save(generated_path)
+                overlay.save(overlay_path)
 
-        row = {
-            "index": global_index,
-            "batch_index": batch_index,
-            "local_index": local_index,
-            "sample_id": payload["sample_id"],
-            "image_id": payload["image_id"],
-            "file_name": payload["file_name"],
-            "seed": seed,
-            "experiment_id": "MD-SDXL-DDIM-REF-F1073",
-            "model_family": "sdxl",
-            "model_id": MODEL_ID,
-            "sampler": "ddim",
-            "scheduler": type(md_ddim.scheduler).__name__,
-            "num_inference_steps": DDIM_NUM_INFERENCE_STEPS,
-            "guidance_scale": DDIM_GUIDANCE_SCALE,
-            "bootstrapping": BOOTSTRAPPING,
-            "view_window_size": VIEW_WINDOW_SIZE,
-            "view_stride": VIEW_STRIDE,
-            "num_views": num_views,
-            "safe_vae": SAFE_VAE,
-            "num_regions_including_background": len(payload["prompts"]),
-            "num_foreground_regions": len(payload["prompts"]) - 1,
-            "background_prompt": payload["prompts"][0],
-            "foreground_prompts": payload["prompts"][1:],
-            "category_names": payload["category_names"][1:],
-            "annotation_ids": payload["annotation_ids"],
-            "area_ratios": payload["area_ratios"],
-            "elapsed_sec": elapsed,
-            "generated_path": str(generated_path),
-            "overlay_path": str(overlay_path),
-            "generated_stats": stats,
-        }
-        summary.append(row)
+                row = {
+                    "index": global_index,
+                    "batch_index": batch_index,
+                    "local_index": local_index,
+                    "sample_id": payload["sample_id"],
+                    "image_id": payload["image_id"],
+                    "file_name": payload["file_name"],
+                    "seed": seed,
+                    "experiment_id": "MD-SDXL-DDIM-REF-F1073",
+                    "model_family": "sdxl",
+                    "model_id": MODEL_ID,
+                    "sampler": "ddim",
+                    "scheduler": type(md_ddim.scheduler).__name__,
+                    "num_inference_steps": DDIM_NUM_INFERENCE_STEPS,
+                    "guidance_scale": DDIM_GUIDANCE_SCALE,
+                    "bootstrapping": BOOTSTRAPPING,
+                    "view_window_size": VIEW_WINDOW_SIZE,
+                    "view_stride": VIEW_STRIDE,
+                    "num_views": num_views,
+                    "safe_vae": SAFE_VAE,
+                    "num_regions_including_background": len(payload["prompts"]),
+                    "num_foreground_regions": len(payload["prompts"]) - 1,
+                    "background_prompt": payload["prompts"][0],
+                    "foreground_prompts": payload["prompts"][1:],
+                    "category_names": payload["category_names"][1:],
+                    "annotation_ids": payload["annotation_ids"],
+                    "area_ratios": payload["area_ratios"],
+                    "elapsed_sec": elapsed,
+                    "generated_path": str(generated_path),
+                    "overlay_path": str(overlay_path),
+                    "generated_stats": stats,
+                }
+                summary.append(row)
 
-        with RUN_SUMMARY_PATH.open("w", encoding="utf-8") as f:
-            json.dump(summary, f, ensure_ascii=False, indent=2)
+                with RUN_SUMMARY_PATH.open("w", encoding="utf-8") as f:
+                    json.dump(summary, f, ensure_ascii=False, indent=2)
 
-        should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
-        if should_display:
-            display_generation_result(payload, original, overlay, generated, elapsed, generated_path)
+                should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
+                if should_display:
+                    display_generation_result(payload, original, overlay, generated, elapsed, generated_path)
 
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception as exc:
+                import traceback
+                rolled_back = any(len(globals()[name]) > list_lengths_before[name] for name in tracked_lists)
+                for name in tracked_lists:
+                    del globals()[name][list_lengths_before[name]:]
+                if rolled_back:
+                    try:
+                        RUN_SUMMARY_PATH.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+                    except Exception as checkpoint_error:
+                        print(f"[CHECKPOINT ERROR] index={global_index}: {checkpoint_error}", flush=True)
+                attempt_elapsed_sec = time.perf_counter() - attempt_started
+                retry_overhead_sec += attempt_elapsed_sec
+                failure = {"index": global_index, "seed": BASE_SEED + global_index,
+                           "sample_id": str(locals().get("sample_id", "")),
+                           "attempt": attempt, "attempt_elapsed_sec": attempt_elapsed_sec,
+                           "error": repr(exc),
+                           "traceback": traceback.format_exc()}
+                with (WORK_DIR / "failed_images.jsonl").open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(failure, ensure_ascii=False) + "\n")
+                print(f"[IMAGE ERROR] index={global_index} attempt={attempt}/3: {exc}", flush=True)
+                if attempt == 3:
+                    failed_images.append(global_index)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                break
         global_index += 1
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+
+if failed_images:
+    raise RuntimeError(f"Run incomplete: {len(failed_images)} manifest indices failed after three attempts: {failed_images}")
 
 summary_df = pd.DataFrame(summary)
 display(Markdown(f"## Done\nGenerated `{len(summary)}` image(s) from `{dataset_size}` manifest record(s). Summary saved to `{RUN_SUMMARY_PATH}`."))

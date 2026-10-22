@@ -112,6 +112,7 @@ LCM_LORA_WEIGHT_NAME = "pytorch_lora_weights.safetensors"
 TARGET_SIZE = (512, 512)
 BATCH_SIZE = 8
 BASE_SEED = 2024
+BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", str(BASE_SEED)))
 
 LCM_NUM_SCHEDULE_STEPS = 50
 LCM_T_INDEX_LIST = [0, 4, 12, 25, 37]
@@ -119,7 +120,7 @@ LCM_T_INDEX_LIST = [0, 4, 12, 25, 37]
 SHOW_INNER_PROGRESS = False
 CHECKPOINT_EVERY_IMAGES = 1
 RESUME_GENERATION = True
-SKIP_EXISTING_IMAGES_WITHOUT_SUMMARY = True
+SKIP_EXISTING_IMAGES_WITHOUT_SUMMARY = False
 LOG_EVERY_IMAGES = 8
 
 NEGATIVE_PROMPT = ""
@@ -396,6 +397,7 @@ print("[SANITY] image stats:", image_stats(sanity_image))
 display(sanity_image.resize((384, 384)))
 
 # --- Source notebook cell 14 ---
+failed_images = []
 # Run generation for every sample in the manifest and display readable previews.
 summary_path = OUTPUT_DIR / "generation_summary.json"
 summary: list[dict] = []
@@ -471,124 +473,162 @@ for batch_index, batch in enumerate(loader):
     print(f"[BATCH] {batch_index + 1}/{len(loader)} - {len(batch['sample_ids'])} sample(s)")
 
     for local_index, sample_id in enumerate(batch["sample_ids"]):
-        global_index = batch_index * BATCH_SIZE + local_index
-        sample_id = str(sample_id)
-        payload = make_multidiffusion_payload(batch, local_index)
-        stem = f"{global_index:04d}_{payload['sample_id']}"
-        generated_path = OUTPUT_DIR / f"{stem}_generated.png"
-        overlay_path = OUTPUT_DIR / f"{stem}_overlay.png"
+        retry_overhead_sec = 0.0
+        for attempt in range(1, 4):
+            attempt_started = time.perf_counter()
+            tracked_lists = ('summary',)
+            list_lengths_before = {name: len(globals()[name]) for name in tracked_lists}
+            counters_before = {name: globals()[name] for name in ("new_generated_count", "resumed_count", "existing_image_only_count")}
+            try:
+                global_index = batch_index * BATCH_SIZE + local_index
+                sample_id = str(sample_id)
+                payload = make_multidiffusion_payload(batch, local_index)
+                stem = f"{global_index:04d}_{payload['sample_id']}"
+                generated_path = OUTPUT_DIR / f"{stem}_generated.png"
+                overlay_path = OUTPUT_DIR / f"{stem}_overlay.png"
 
-        previous_row = previous_by_sample_id.get(sample_id)
-        if RESUME_GENERATION and previous_row is not None:
-            row = dict(previous_row)
-            row["resumed"] = True
-            summary.append(row)
-            resumed_count += 1
-            if LOG_EVERY_IMAGES > 0 and resumed_count % LOG_EVERY_IMAGES == 0:
-                print(f"[RESUME] skipped {resumed_count} existing image(s); last={sample_id}")
-            continue
+                previous_row = previous_by_sample_id.get(sample_id)
+                if RESUME_GENERATION and previous_row is not None:
+                    row = dict(previous_row)
+                    row["resumed"] = True
+                    summary.append(row)
+                    resumed_count += 1
+                    if LOG_EVERY_IMAGES > 0 and resumed_count % LOG_EVERY_IMAGES == 0:
+                        print(f"[RESUME] skipped {resumed_count} existing image(s); last={sample_id}")
+                    break
 
-        existing_path = find_existing_generated_image(global_index, sample_id)
-        if RESUME_GENERATION and SKIP_EXISTING_IMAGES_WITHOUT_SUMMARY and existing_path is not None:
-            row = {
-                "index": global_index,
-                "batch_index": batch_index,
-                "local_index": local_index,
-                "sample_id": payload["sample_id"],
-                "image_id": payload["image_id"],
-                "file_name": payload["file_name"],
-                "seed": BASE_SEED + global_index,
-                "config_id": CONFIG_ID,
-                "lcm_experiment_profile": LCM_EXPERIMENT_PROFILE,
-                "method": "multidiffusion",
-                "model_family": "sd15",
-                "model_id": MODEL_ID,
-                "sampler": "lcm",
-                "scheduler": type(md_lcm.scheduler).__name__,
-                "lcm_lora": LCM_LORA_ID,
-                "lcm_t_index_list": LCM_T_INDEX_LIST,
-                "num_schedule_steps": LCM_NUM_SCHEDULE_STEPS,
-                "guidance_scale": LCM_GUIDANCE_SCALE,
-                "bootstrapping": BOOTSTRAPPING,
-                "num_regions_including_background": len(payload["prompts"]),
-                "elapsed_sec": None,
-                "generated_path": str(existing_path),
-                "overlay_path": str(overlay_path),
-                "resumed": True,
-                "resume_source": "existing_image_without_summary",
-            }
-            summary.append(row)
-            existing_image_only_count += 1
-            if CHECKPOINT_EVERY_IMAGES > 0 and len(summary) % CHECKPOINT_EVERY_IMAGES == 0:
-                write_generation_checkpoint()
-            if LOG_EVERY_IMAGES > 0 and existing_image_only_count % LOG_EVERY_IMAGES == 0:
-                print(f"[RESUME] skipped {existing_image_only_count} image file(s) without previous timing; last={sample_id}")
-            continue
+                existing_path = find_existing_generated_image(global_index, sample_id)
+                if RESUME_GENERATION and SKIP_EXISTING_IMAGES_WITHOUT_SUMMARY and existing_path is not None:
+                    row = {
+                        "index": global_index,
+                        "batch_index": batch_index,
+                        "local_index": local_index,
+                        "sample_id": payload["sample_id"],
+                        "image_id": payload["image_id"],
+                        "file_name": payload["file_name"],
+                        "seed": BASE_SEED + global_index,
+                        "config_id": CONFIG_ID,
+                        "lcm_experiment_profile": LCM_EXPERIMENT_PROFILE,
+                        "method": "multidiffusion",
+                        "model_family": "sd15",
+                        "model_id": MODEL_ID,
+                        "sampler": "lcm",
+                        "scheduler": type(md_lcm.scheduler).__name__,
+                        "lcm_lora": LCM_LORA_ID,
+                        "lcm_t_index_list": LCM_T_INDEX_LIST,
+                        "num_schedule_steps": LCM_NUM_SCHEDULE_STEPS,
+                        "guidance_scale": LCM_GUIDANCE_SCALE,
+                        "bootstrapping": BOOTSTRAPPING,
+                        "num_regions_including_background": len(payload["prompts"]),
+                        "elapsed_sec": None,
+                        "generated_path": str(existing_path),
+                        "overlay_path": str(overlay_path),
+                        "resumed": True,
+                        "resume_source": "existing_image_without_summary",
+                    }
+                    summary.append(row)
+                    existing_image_only_count += 1
+                    if CHECKPOINT_EVERY_IMAGES > 0 and len(summary) % CHECKPOINT_EVERY_IMAGES == 0:
+                        write_generation_checkpoint()
+                    if LOG_EVERY_IMAGES > 0 and existing_image_only_count % LOG_EVERY_IMAGES == 0:
+                        print(f"[RESUME] skipped {existing_image_only_count} image file(s) without previous timing; last={sample_id}")
+                    break
 
-        original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
-        overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
+                original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
+                overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
 
-        seed = BASE_SEED + global_index
-        seed_everything(seed)
+                seed = BASE_SEED + global_index
+                seed_everything(seed)
 
-        tic = time.perf_counter()
-        generated = md_lcm.generate(
-            masks=payload["all_masks"],
-            prompts=payload["prompts"],
-            negative_prompts=payload["negative_prompts"],
-            height=payload["height"],
-            width=payload["width"],
-            guidance_scale=LCM_GUIDANCE_SCALE,
-            bootstrapping=BOOTSTRAPPING,
-            show_progress=SHOW_INNER_PROGRESS,
-        )
-        elapsed = time.perf_counter() - tic
+                tic = time.perf_counter()
+                generated = md_lcm.generate(
+                    masks=payload["all_masks"],
+                    prompts=payload["prompts"],
+                    negative_prompts=payload["negative_prompts"],
+                    height=payload["height"],
+                    width=payload["width"],
+                    guidance_scale=LCM_GUIDANCE_SCALE,
+                    bootstrapping=BOOTSTRAPPING,
+                    show_progress=SHOW_INNER_PROGRESS,
+                )
+                elapsed = time.perf_counter() - tic + retry_overhead_sec
 
-        generated.save(generated_path)
-        overlay.save(overlay_path)
-        if not is_valid_image(generated_path):
-            raise RuntimeError(f"Generated image is invalid: {generated_path}")
+                generated.save(generated_path)
+                overlay.save(overlay_path)
+                if not is_valid_image(generated_path):
+                    raise RuntimeError(f"Generated image is invalid: {generated_path}")
 
-        summary.append({
-            "index": global_index,
-            "batch_index": batch_index,
-            "local_index": local_index,
-            "sample_id": payload["sample_id"],
-            "image_id": payload["image_id"],
-            "file_name": payload["file_name"],
-            "seed": seed,
-            "config_id": CONFIG_ID,
-            "lcm_experiment_profile": LCM_EXPERIMENT_PROFILE,
-            "method": "multidiffusion",
-            "model_family": "sd15",
-            "model_id": MODEL_ID,
-            "sampler": "lcm",
-            "scheduler": type(md_lcm.scheduler).__name__,
-            "lcm_lora": LCM_LORA_ID,
-            "lcm_t_index_list": LCM_T_INDEX_LIST,
-            "num_schedule_steps": LCM_NUM_SCHEDULE_STEPS,
-            "guidance_scale": LCM_GUIDANCE_SCALE,
-            "bootstrapping": BOOTSTRAPPING,
-            "num_regions_including_background": len(payload["prompts"]),
-            "elapsed_sec": elapsed,
-            "generated_path": str(generated_path),
-            "overlay_path": str(overlay_path),
-            "resumed": False,
-        })
-        new_generated_count += 1
+                summary.append({
+                    "index": global_index,
+                    "batch_index": batch_index,
+                    "local_index": local_index,
+                    "sample_id": payload["sample_id"],
+                    "image_id": payload["image_id"],
+                    "file_name": payload["file_name"],
+                    "seed": seed,
+                    "config_id": CONFIG_ID,
+                    "lcm_experiment_profile": LCM_EXPERIMENT_PROFILE,
+                    "method": "multidiffusion",
+                    "model_family": "sd15",
+                    "model_id": MODEL_ID,
+                    "sampler": "lcm",
+                    "scheduler": type(md_lcm.scheduler).__name__,
+                    "lcm_lora": LCM_LORA_ID,
+                    "lcm_t_index_list": LCM_T_INDEX_LIST,
+                    "num_schedule_steps": LCM_NUM_SCHEDULE_STEPS,
+                    "guidance_scale": LCM_GUIDANCE_SCALE,
+                    "bootstrapping": BOOTSTRAPPING,
+                    "num_regions_including_background": len(payload["prompts"]),
+                    "elapsed_sec": elapsed,
+                    "generated_path": str(generated_path),
+                    "overlay_path": str(overlay_path),
+                    "resumed": False,
+                })
+                new_generated_count += 1
 
-        if CHECKPOINT_EVERY_IMAGES > 0 and len(summary) % CHECKPOINT_EVERY_IMAGES == 0:
-            write_generation_checkpoint()
+                if CHECKPOINT_EVERY_IMAGES > 0 and len(summary) % CHECKPOINT_EVERY_IMAGES == 0:
+                    write_generation_checkpoint()
 
-        should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
-        if should_display:
-            display_multidiffusion_result(payload, original, overlay, generated, elapsed, generated_path)
+                should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
+                if should_display:
+                    display_multidiffusion_result(payload, original, overlay, generated, elapsed, generated_path)
 
-        if LOG_EVERY_IMAGES > 0 and new_generated_count % LOG_EVERY_IMAGES == 0:
-            print(f"[PROGRESS] new={new_generated_count}, resumed={resumed_count}, existing_image_only={existing_image_only_count}, total_logged={len(summary)}/{dataset_size}")
+                if LOG_EVERY_IMAGES > 0 and new_generated_count % LOG_EVERY_IMAGES == 0:
+                    print(f"[PROGRESS] new={new_generated_count}, resumed={resumed_count}, existing_image_only={existing_image_only_count}, total_logged={len(summary)}/{dataset_size}")
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception as exc:
+                import traceback
+                rolled_back = any(len(globals()[name]) > list_lengths_before[name] for name in tracked_lists)
+                for name in tracked_lists:
+                    del globals()[name][list_lengths_before[name]:]
+                for name, value in counters_before.items():
+                    globals()[name] = value
+                if rolled_back:
+                    try:
+                        write_generation_checkpoint()
+                    except Exception as checkpoint_error:
+                        print(f"[CHECKPOINT ERROR] index={global_index}: {checkpoint_error}", flush=True)
+                attempt_elapsed_sec = time.perf_counter() - attempt_started
+                retry_overhead_sec += attempt_elapsed_sec
+                failure = {"index": global_index, "seed": BASE_SEED + global_index,
+                           "sample_id": str(locals().get("sample_id", "")),
+                           "attempt": attempt, "attempt_elapsed_sec": attempt_elapsed_sec,
+                           "error": repr(exc),
+                           "traceback": traceback.format_exc()}
+                with (WORK_DIR / "failed_images.jsonl").open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(failure, ensure_ascii=False) + "\n")
+                print(f"[IMAGE ERROR] index={global_index} attempt={attempt}/3: {exc}", flush=True)
+                if attempt == 3:
+                    failed_images.append(global_index)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                break
+
+if failed_images:
+    raise RuntimeError(f"Run incomplete: {len(failed_images)} manifest indices failed after three attempts: {failed_images}")
 
 write_generation_checkpoint()
 

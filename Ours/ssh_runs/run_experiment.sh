@@ -11,14 +11,16 @@ usage() {
     '  ./Ours/ssh_runs/run_experiment.sh [--output-root DIR] [--coco-root DIR] [--tag NAME] [--python BIN] [--gpu-mode MODE]' \
     '  ./Ours/ssh_runs/run_experiment.sh --dry-run' \
     '  bash Ours/ssh_runs/run_experiment.sh --list' \
-    '  bash Ours/ssh_runs/run_experiment.sh --experiment ID [--coco-root DIR] [--output-root DIR] [--tag NAME] [--python BIN] [--gpu-mode MODE] [--run-profile PROFILE]' \
+    '  bash Ours/ssh_runs/run_experiment.sh --experiment ID [--base-seed N] [--coco-root DIR] [--output-root DIR] [--tag NAME] [--python BIN] [--gpu-mode MODE] [--run-profile PROFILE]' \
+    '  bash Ours/ssh_runs/run_experiment.sh --experiment sem_sd3_ffm|ours_sd3_ffm|md_sd3_ffm --tag NAME --base-seed N --resume' \
     '  bash Ours/ssh_runs/run_experiment.sh --prepare-coco [--coco-root DIR] [--output-root DIR] [--python BIN]' \
     '  bash Ours/ssh_runs/run_experiment.sh --experiment cleanfid --dataset-root DIR [--output-root DIR] [--experiments ID1,ID2] [--tag NAME]' \
     '  bash Ours/ssh_runs/run_experiment.sh --experiment pytorch_fid --export-dir DIR [--coco-root DIR] [--output-root DIR] [--reference-dir DIR] [--tag NAME]' \
     '  bash Ours/ssh_runs/run_experiment.sh --experiment ttur_fid --export-dir DIR [--coco-root DIR] [--output-root DIR] [--reference-dir DIR] [--ttur-fid-file FILE] [--tag NAME]' \
     '' \
-    'No arguments: run all 38 non-SD3 experiments sequentially (14 benchmarks, 21 diagnostics, 3 FID tools).' \
-    'This is the only Bash entrypoint. Use --list for all experiment IDs.'
+    'No arguments: run 21 diagnostics once, then 17 benchmarks and 3 FID tools for each of 3 base seeds (2024, 10002024, 20002024).' \
+    'This is the only Bash entrypoint. Use --list for all experiment IDs.' \
+    'SD3 requires accepted access to stabilityai/stable-diffusion-3-medium-diffusers and HF_TOKEN or a saved hf auth login on the SSH host.'
 }
 
 list_profiles() {
@@ -35,14 +37,18 @@ dataset_root=""; export_dir=""; reference_dir=""; metric_experiments=""; ttur_fi
 python_bin="${PYTHON_BIN:-python3}"
 gpu_mode="high_vram_24gb"
 run_profile_override=""
+base_seed="2024"
+base_seed_explicit=false
 prepare_coco_only=false
 dry_run=false
+resume_run=false
 
 while (($#)); do
   case "$1" in
     --list) list_profiles; exit 0 ;;
     --prepare-coco) prepare_coco_only=true; shift ;;
     --dry-run) dry_run=true; shift ;;
+    --resume) resume_run=true; shift ;;
     --experiment) experiment="${2:?Missing experiment ID}"; shift 2 ;;
     --coco-root) coco_root="${2:?Missing COCO directory}"; shift 2 ;;
     --output-root) output_root="${2:?Missing output directory}"; shift 2 ;;
@@ -55,6 +61,7 @@ while (($#)); do
     --python) python_bin="${2:?Missing Python command}"; shift 2 ;;
     --gpu-mode) gpu_mode="${2:?Missing GPU mode}"; shift 2 ;;
     --run-profile) run_profile_override="${2:?Missing run profile}"; shift 2 ;;
+    --base-seed) base_seed="${2:?Missing base seed}"; base_seed_explicit=true; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -88,8 +95,24 @@ fi
 if [[ "$profile_kind" == "suite" && ( -n "$dataset_root" || -n "$export_dir" || -n "$reference_dir" || -n "$metric_experiments" || -n "$ttur_fid_file" || -n "$run_profile_override" ) ]]; then
   echo "Dataset/export/reference and run-profile options require --experiment" >&2; exit 2
 fi
+if [[ "$profile_kind" == "suite" && "$base_seed_explicit" == true ]]; then
+  echo "The complete suite uses its fixed three base seeds; --base-seed is for one experiment" >&2; exit 2
+fi
+if [[ ( "$profile_kind" == "diagnostic" || "$profile_kind" == "prepare_coco" ) && "$base_seed_explicit" == true ]]; then
+  echo "--base-seed applies only to benchmark and FID profiles" >&2; exit 2
+fi
+if [[ ! "$base_seed" =~ ^[0-9]+$ ]] || (( ${#base_seed} > 10 )); then
+  echo "Invalid base seed: $base_seed" >&2; exit 2
+fi
+base_seed="$((10#$base_seed))"
+if (( base_seed < 0 || base_seed + 1072 >= 4294967296 )); then
+  echo "Base seed must leave room for 1073 distinct per-image seeds" >&2; exit 2
+fi
 if [[ "$dry_run" == true && "$profile_kind" != "suite" ]]; then
   echo "--dry-run applies only to the complete suite" >&2; exit 2
+fi
+if [[ "$resume_run" == true && "$experiment" != *_sd3_ffm ]]; then
+  echo "--resume is supported only for an incomplete SD3 benchmark" >&2; exit 2
 fi
 if [[ -n "$run_tag" && ! "$run_tag" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
   echo "Invalid run tag: $run_tag" >&2; exit 2
@@ -109,6 +132,59 @@ fi
 if ! command -v "$python_bin" >/dev/null 2>&1; then
   echo "Python command not found: $python_bin" >&2; exit 2
 fi
+
+check_sd3_hf_access() {
+  "$python_bin" - "$1" <<'PY'
+import ast
+import os
+import sys
+from pathlib import Path
+
+profile = Path(sys.argv[1])
+assignments = {}
+for node in ast.parse(profile.read_text(encoding="utf-8")).body:
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in {"MODEL_ID", "MODEL_REVISION"}:
+                assignments[target.id] = ast.literal_eval(node.value)
+
+model_id = assignments.get("MODEL_ID")
+revision = assignments.get("MODEL_REVISION")
+if not isinstance(model_id, str) or not isinstance(revision, str):
+    sys.exit("[HF] Cannot read the pinned SD3 model ID and revision from the profile")
+
+try:
+    from huggingface_hub import get_token, hf_hub_download
+except ImportError:
+    sys.exit("[HF] huggingface_hub is missing from the selected Python environment")
+
+token = get_token()
+if not token:
+    sys.exit(
+        "[HF] SD3 requires Hugging Face access. Accept the model conditions at "
+        "https://huggingface.co/stabilityai/stable-diffusion-3-medium-diffusers "
+        "and use HF_TOKEN or run `hf auth login` on the SSH host."
+    )
+if os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN", "").lower() in {"1", "true", "yes", "on"}:
+    sys.exit("[HF] Unset HF_HUB_DISABLE_IMPLICIT_TOKEN so SD3 model loading can use your token")
+
+try:
+    hf_hub_download(
+        repo_id=model_id,
+        revision=revision,
+        filename="model_index.json",
+        token=token,
+    )
+except Exception as exc:
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    detail = f"HTTP {status}" if status is not None else type(exc).__name__
+    sys.exit(
+        f"[HF] Cannot access SD3 model at pinned revision ({detail}). "
+        "Check model access, token permissions, and network/cache availability."
+    )
+print("[HF] SD3 model access verified at the pinned revision")
+PY
+}
 
 prepare_coco() {
   "$python_bin" - "$coco_root" "${1:-normal}" <<'PY'
@@ -278,13 +354,15 @@ if [[ "$profile_kind" == "suite" ]]; then
     sem_sd15_hypersd ours_sd15_hypersd ours_sd15_hypersd_dpp ours_sd15_hypersd_pladis
     sem_sdxl_euler ours_sdxl_euler
     md_sd15_lcm md_sd15_hypersd md_sd15_ddim md_sdxl_euler md_sdxl_ddim
+    sem_sd3_ffm ours_sd3_ffm md_sd3_ffm
   )
+  fid_benchmark_ids=("${benchmark_ids[@]:0:14}")
   diagnostic_ids=()
   for source in "$SCRIPT_DIR"/diagnostics/*.py; do
     diagnostic_ids+=("${source##*/}")
   done
   diagnostic_ids=("${diagnostic_ids[@]%.py}")
-  if [[ "${#benchmark_ids[@]}" -ne 14 || "${#diagnostic_ids[@]}" -ne 21 ]]; then
+  if [[ "${#benchmark_ids[@]}" -ne 17 || "${#diagnostic_ids[@]}" -ne 21 ]]; then
     echo "Unexpected benchmark or diagnostic profile count; inspect the suite before running" >&2; exit 2
   fi
   for id in "${benchmark_ids[@]}"; do
@@ -298,22 +376,22 @@ if [[ "$profile_kind" == "suite" ]]; then
     fi
   done
   if [[ -z "$run_tag" ]]; then run_tag="$(date -u +%Y%m%dT%H%M%SZ)"; fi
-  printf '[SUITE] tag=%s | diagnostics=%s | benchmarks=%s | FID tools=3\n' \
+  suite_seeds=(2024 10002024 20002024)
+  printf '[SUITE] tag=%s | diagnostics=%s once | benchmarks=%s x 3 seeds | FID tools=3 x 3 seeds\n' \
     "$run_tag" "${#diagnostic_ids[@]}" "${#benchmark_ids[@]}"
   if [[ "$dry_run" == true ]]; then
-    printf '[PLAN] %s\n' "${diagnostic_ids[@]}" "${benchmark_ids[@]}" pytorch_fid cleanfid ttur_fid
+    printf '[PLAN] diagnostic %s\n' "${diagnostic_ids[@]}"
+    for planned_seed in "${suite_seeds[@]}"; do
+      for planned_id in "${benchmark_ids[@]}" pytorch_fid cleanfid ttur_fid; do
+        printf '[PLAN] seed_%s %s\n' "$planned_seed" "$planned_id"
+      done
+    done
+    printf '[PLAN] aggregate 3 seed reports\n'
     exit 0
   fi
 
-  # Fail before any GPU work when packages needed by later FID/PLADIS stages are absent.
-  "$python_bin" - <<'PY'
-import importlib.util
-modules = ("torch", "diffusers", "open_clip", "pycocotools", "torchmetrics",
-           "entmax", "cleanfid", "pytorch_fid", "tensorflow", "imageio", "PIL")
-missing = [name for name in modules if importlib.util.find_spec(name) is None]
-if missing:
-    raise SystemExit("Missing suite dependencies: " + ", ".join(missing))
-PY
+  # A missing optional package is recorded against its profile, so later
+  # independent experiments can still run.
   mkdir -p -- "$output_root"
   output_root="$(cd -- "$output_root" && pwd -P)"
   coco_root="$("$python_bin" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$coco_root")"
@@ -323,35 +401,87 @@ PY
   fi
   mkdir -- "$suite_root"
   echo "[SUITE] output=$suite_root | COCO=$coco_root"
+  if ! check_sd3_hf_access "$SCRIPT_DIR/profiles/sem_sd3_ffm.py"; then
+    echo "[SUITE WARN] SD3 access is unavailable now; non-SD3 profiles will still run" >&2
+  fi
   prepare_coco
 
   run_suite_profile() {
     local id="$1"
     shift
-    echo "[SUITE] Starting $id"
-    bash "$SCRIPT_DIR/run_experiment.sh" --experiment "$id" \
+    local seed_label="${active_base_seed:-diagnostic}"
+    local log_dir="$suite_root/runner_logs/$seed_label"
+    local log_file="$log_dir/$id.log"
+    mkdir -p -- "$log_dir"
+    echo "[SUITE] Starting $seed_label/$id"
+    local -a seed_args=()
+    if [[ -n "${active_base_seed:-}" ]]; then seed_args=(--base-seed "$active_base_seed"); fi
+    local -a command=(bash "$SCRIPT_DIR/run_experiment.sh" --experiment "$id" \
       --coco-root "$coco_root" --output-root "$output_root" \
-      --tag "$run_tag" --python "$python_bin" --gpu-mode "$gpu_mode" "$@"
+      --tag "$run_tag" --python "$python_bin" --gpu-mode "$gpu_mode" "${seed_args[@]}" "$@")
+    if "${command[@]}" >"$log_file" 2>&1; then
+      touch -- "$log_file.ok"
+      echo "[PASS] $seed_label/$id | log=$log_file"
+      return 0
+    else
+      local status=$?
+      if [[ "$id" == *_sd3_ffm ]]; then
+        local image_failure_log=""
+        image_failure_log="$(find "$suite_root/seed_$active_base_seed/$id/anchordraw_runs" -name failed_images.jsonl -type f -print -quit 2>/dev/null || true)"
+        if [[ -n "$image_failure_log" ]]; then
+          echo "[RETRY] $seed_label/$id: resuming only missing SD3 indices"
+          if "${command[@]}" --resume >>"$log_file" 2>&1; then
+            touch -- "$log_file.ok"
+            echo "[PASS] $seed_label/$id after resume | log=$log_file"
+            return 0
+          else
+            status=$?
+          fi
+        fi
+      fi
+      printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" "$status" "$log_file" >> "$suite_root/suite_failures.tsv"
+      echo "[FAIL] $seed_label/$id (exit=$status) | log=$log_file" >&2
+      tail -n 3 -- "$log_file" >&2 || true
+      return 1
+    fi
   }
 
-  for id in "${diagnostic_ids[@]}"; do run_suite_profile "$id"; done
-  for id in "${benchmark_ids[@]}"; do run_suite_profile "$id"; done
+  printf 'seed\tprofile\texit_code\tlog\n' > "$suite_root/suite_failures.tsv"
+  suite_failed=false
+  for id in "${diagnostic_ids[@]}"; do
+    if ! run_suite_profile "$id"; then suite_failed=true; fi
+  done
+  for active_base_seed in "${suite_seeds[@]}"; do
+    seed_root="$suite_root/seed_$active_base_seed"
+    seed_benchmarks_ok=true
+    for id in "${benchmark_ids[@]}"; do
+      if ! run_suite_profile "$id"; then
+        suite_failed=true
+        if [[ "$id" != *_sd3_ffm ]]; then seed_benchmarks_ok=false; fi
+      fi
+    done
 
   # These two notebooks specifically evaluate the verified SemanticDraw SD1.5 LCM export.
-  export_dir="$suite_root/sem_sd15_lcm/metric_export"
-  if [[ ! -f "$export_dir/metric_generated_manifest.jsonl" ]]; then
-    echo "SemanticDraw SD1.5 LCM metric export is missing: $export_dir" >&2; exit 2
+  export_dir="$seed_root/sem_sd15_lcm/metric_export"
+  if [[ -f "$export_dir/metric_generated_manifest.jsonl" ]]; then
+    if ! run_suite_profile pytorch_fid --export-dir "$export_dir"; then suite_failed=true; fi
+  else
+    echo "[SKIP] seed_$active_base_seed/pytorch_fid: SemanticDraw SD1.5 LCM export missing" >&2
+    suite_failed=true
   fi
-  run_suite_profile pytorch_fid --export-dir "$export_dir"
-  reference_dir="$suite_root/pytorch_fid/pytorch_fid_eval/sem_sd15_lcm/reference_images/sem_sd15_lcm"
-  if [[ ! -d "$reference_dir" ]]; then
-    echo "PyTorch FID reference images are missing: $reference_dir" >&2; exit 2
+  reference_dir="$seed_root/pytorch_fid/pytorch_fid_eval/sem_sd15_lcm/reference_images/sem_sd15_lcm"
+  if [[ -f "$suite_root/runner_logs/$active_base_seed/pytorch_fid.log.ok" && -d "$reference_dir" ]]; then
+    if ! run_suite_profile ttur_fid --export-dir "$export_dir" --reference-dir "$reference_dir"; then suite_failed=true; fi
+  else
+    echo "[SKIP] seed_$active_base_seed/ttur_fid: PyTorch FID reference missing" >&2
+    suite_failed=true
   fi
 
   # CleanFID's source notebook expects reference_images/ID and ID/generated_images.
   # Build both resolutions from the verified COCO manifest and link all 14 exports.
-  dataset_root="$suite_root/_cleanfid_dataset"
-  "$python_bin" - "$suite_root" "$coco_root" "$dataset_root" "${benchmark_ids[@]}" <<'PY'
+  dataset_root="$seed_root/_cleanfid_dataset"
+  prepare_cleanfid_dataset() {
+  "$python_bin" - "$seed_root" "$coco_root" "$dataset_root" "${fid_benchmark_ids[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -400,8 +530,9 @@ for profile in ids:
     link(dataset / ("_reference_" + family), dataset / "reference_images" / profile)
 print(f"[CleanFID] Prepared {len(ids)} verified experiment pairs: {dataset}", flush=True)
 PY
-  run_suite_profile cleanfid --dataset-root "$dataset_root"
-  "$python_bin" - "$suite_root/cleanfid" "${benchmark_ids[@]}" <<'PY'
+  }
+  verify_cleanfid_reports() {
+  "$python_bin" - "$seed_root/cleanfid" "${fid_benchmark_ids[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -419,10 +550,71 @@ if any(row.get("num_generated") != 1073 or row.get("num_reference") != 1073 for 
     raise SystemExit("CleanFID did not evaluate 1073 generated and reference images for every benchmark")
 print("[CleanFID] Verified all 14 benchmark reports", flush=True)
 PY
-  run_suite_profile ttur_fid --export-dir "$export_dir" --reference-dir "$reference_dir"
-  printf '%s\n' "${diagnostic_ids[@]}" "${benchmark_ids[@]}" pytorch_fid cleanfid ttur_fid \
-    > "$suite_root/suite_complete.txt"
-  echo "[SUITE PASS] All 38 non-SD3 experiments completed: $suite_root"
+  }
+  if [[ "$seed_benchmarks_ok" == true ]]; then
+    if prepare_cleanfid_dataset >"$suite_root/runner_logs/$active_base_seed/cleanfid_prepare.log" 2>&1; then
+      if run_suite_profile cleanfid --dataset-root "$dataset_root"; then
+        if ! verify_cleanfid_reports >"$suite_root/runner_logs/$active_base_seed/cleanfid_verify.log" 2>&1; then
+          echo "[FAIL] seed_$active_base_seed/cleanfid verification; see runner_logs" >&2
+          suite_failed=true
+        fi
+      else
+        suite_failed=true
+      fi
+    else
+      echo "[FAIL] seed_$active_base_seed/cleanfid preparation; see runner_logs" >&2
+      suite_failed=true
+    fi
+  else
+    echo "[SKIP] seed_$active_base_seed/cleanfid: one or more 14 source benchmarks missing" >&2
+    suite_failed=true
+  fi
+  seed_complete=true
+  for id in "${fid_benchmark_ids[@]}" pytorch_fid cleanfid ttur_fid; do
+    if [[ ! -f "$suite_root/runner_logs/$active_base_seed/$id.log.ok" ]]; then seed_complete=false; fi
+  done
+  if [[ ! -s "$suite_root/runner_logs/$active_base_seed/cleanfid_verify.log" ]] ||
+     ! grep -q 'Verified all 14 benchmark reports' "$suite_root/runner_logs/$active_base_seed/cleanfid_verify.log"; then
+    seed_complete=false
+  fi
+  if [[ "$seed_complete" == true ]]; then
+    printf '%s\n' "${fid_benchmark_ids[@]}" pytorch_fid cleanfid ttur_fid > "$seed_root/seed_complete.txt"
+  fi
+  done
+  non_sd3_ready=true
+  sd3_ready=true
+  for seed in "${suite_seeds[@]}"; do
+    if [[ ! -f "$suite_root/seed_$seed/seed_complete.txt" ]]; then non_sd3_ready=false; fi
+    for id in sem_sd3_ffm ours_sd3_ffm md_sd3_ffm; do
+      if [[ ! -f "$suite_root/runner_logs/$seed/$id.log.ok" ]]; then sd3_ready=false; fi
+    done
+  done
+  if [[ "$non_sd3_ready" == true ]]; then
+    if ! "$python_bin" -u "$SCRIPT_DIR/aggregate_seeds.py" "$suite_root" "${suite_seeds[@]}" >"$suite_root/aggregate_non_sd3.log" 2>&1; then
+      echo "[FAIL] Non-SD3 three-seed aggregation; see aggregate_non_sd3.log" >&2
+      suite_failed=true
+    fi
+  else
+    echo "[SKIP] Non-SD3 three-seed aggregation: incomplete seed set" >&2
+    suite_failed=true
+  fi
+  if [[ "$sd3_ready" == true ]]; then
+    if ! "$python_bin" -u "$SCRIPT_DIR/aggregate_sd3_seeds.py" \
+      --semanticdraw "$suite_root" --anchordraw "$suite_root" --multidiffusion "$suite_root" \
+      --output "$suite_root" >"$suite_root/aggregate_sd3.log" 2>&1; then
+      echo "[FAIL] SD3 three-seed aggregation; see aggregate_sd3.log" >&2
+      suite_failed=true
+    fi
+  else
+    echo "[SKIP] SD3 three-seed aggregation: incomplete seed set" >&2
+    suite_failed=true
+  fi
+  if [[ "$suite_failed" == true ]]; then
+    echo "[SUITE INCOMPLETE] Completed independent profiles; inspect $suite_root/suite_failures.tsv and runner_logs" >&2
+    exit 1
+  fi
+  printf '%s\n' "${diagnostic_ids[@]}" "${suite_seeds[@]}" > "$suite_root/suite_complete.txt"
+  echo "[SUITE PASS] All three-seed profiles completed: $suite_root"
   exit 0
 fi
 
@@ -439,6 +631,7 @@ fi
 if [[ "$profile_kind" == "full1073" ]]; then
   "$python_bin" -c 'import torch, diffusers, open_clip, pycocotools; from torchmetrics.image.fid import FrechetInceptionDistance; from torchmetrics.image.inception import InceptionScore'
   if [[ "$experiment" == "ours_sd15_hypersd_pladis" ]]; then "$python_bin" -c 'import entmax'; fi
+  if [[ "$experiment" == *_sd3_ffm ]]; then check_sd3_hf_access "$profile_script"; fi
 fi
 
 if [[ "$profile_kind" == "metric" && "$experiment" == "cleanfid" ]]; then
@@ -458,6 +651,10 @@ elif [[ "$profile_kind" == "metric" ]]; then
     "$python_bin" -u "$SCRIPT_DIR/verify_inputs.py" sem_sd15_lcm "$coco_root" >/dev/null
   fi
   export_dir="$(cd -- "$export_dir" && pwd -P)"
+  export_seed_file="${export_dir%/*}/base_seed.txt"
+  if [[ -f "$export_seed_file" && "$(<"$export_seed_file")" != "$base_seed" ]]; then
+    echo "FID export belongs to a different base seed: $export_dir" >&2; exit 2
+  fi
   coco_root="$(cd -- "$coco_root" && pwd -P)"
   if [[ -n "$reference_dir" ]]; then
     if [[ ! -d "$reference_dir" ]]; then
@@ -487,14 +684,28 @@ if [[ "$profile_kind" != "metric" ]]; then
   fi
   printf '%s\n' "$input_report"
 fi
-run_dir="$output_root/$run_tag/$experiment"
+if [[ "$profile_kind" == "full1073" || "$profile_kind" == "metric" ]]; then
+  run_dir="$output_root/$run_tag/seed_$base_seed/$experiment"
+else
+  run_dir="$output_root/$run_tag/$experiment"
+fi
 mkdir -p -- "${run_dir%/*}"
-if ! mkdir -- "$run_dir"; then
-  echo "Run directory already exists; choose another --tag: $run_dir" >&2; exit 2
+if [[ "$resume_run" == true ]]; then
+  if [[ ! -d "$run_dir" || -f "$run_dir/benchmark_complete.txt" ]]; then
+    echo "--resume requires an existing incomplete SD3 run: $run_dir" >&2; exit 2
+  fi
+else
+  if ! mkdir -- "$run_dir"; then
+    echo "Run directory already exists; choose another --tag: $run_dir" >&2; exit 2
+  fi
 fi
 
 export ANCHORDRAW_WORK_DIR="$run_dir" COCO_ROOT="$coco_root"
+export ANCHORDRAW_BASE_SEED="$base_seed"
 export MPLBACKEND="Agg" PYTHONUNBUFFERED="1"
+if [[ "$experiment" == *_sd3_ffm ]]; then
+  export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+fi
 if [[ "$profile_kind" == "full1073" ]]; then
   export RUN_PROFILE="full1073"
 elif [[ "$profile_kind" == "diagnostic" ]]; then
@@ -516,15 +727,34 @@ case "$experiment" in
   md_sdxl_ddim) export DDIM_EXPERIMENT_PROFILE="ref_g75_b20_full_view" ;;
 esac
 export COLAB_GPU_MODE="$gpu_mode"
+if [[ "$experiment" == sem_sd3_ffm || "$experiment" == ours_sd3_ffm ]]; then
+  if [[ "$gpu_mode" == "low_vram" ]]; then
+    export COLAB_GPU_MODE="low_vram"
+  else
+    export COLAB_GPU_MODE="high_vram"
+  fi
+fi
 
 echo "[RUN] $experiment | kind=$profile_kind | tag=$run_tag | output=$run_dir"
-if [[ "$profile_kind" != "metric" ]]; then printf '%s\n' "$input_report" > "$run_dir/input_verification.json"; fi
-git -C "$REPO_ROOT" rev-parse HEAD > "$run_dir/repo_commit.txt" 2>/dev/null || true
-git -C "$REPO_ROOT" status --short > "$run_dir/repo_status.txt" 2>/dev/null || true
-find "$REPO_ROOT/Baseline" "$REPO_ROOT/Ours/src" "$SCRIPT_DIR" -type f \( -name '*.py' -o -name '*.sh' \) -print0 \
-  | sort -z | xargs -0 -r sha256sum > "$run_dir/code_sha256.txt"
-sha256sum "$profile_script" > "$run_dir/profile_sha256.txt"
-"$python_bin" -m pip freeze > "$run_dir/pip_freeze.txt"
+if [[ "$resume_run" == true ]]; then
+  if [[ "$(<"$run_dir/base_seed.txt")" != "$base_seed" ]] ||
+     ! cmp -s <(printf '%s\n' "$input_report") "$run_dir/input_verification.json" ||
+     ! cmp -s <(sha256sum "$profile_script") "$run_dir/profile_sha256.txt" ||
+     ! cmp -s <("$python_bin" -m pip freeze) "$run_dir/pip_freeze.txt" ||
+     ! cmp -s <(find "$REPO_ROOT/Baseline" "$REPO_ROOT/Ours/src" "$SCRIPT_DIR" -type f \( -name '*.py' -o -name '*.sh' \) -print0 \
+       | sort -z | xargs -0 -r sha256sum) "$run_dir/code_sha256.txt"; then
+    echo "SD3 resume rejected: seed, COCO input, profile, code or Python environment changed: $run_dir" >&2; exit 2
+  fi
+else
+  printf '%s\n' "$base_seed" > "$run_dir/base_seed.txt"
+  if [[ "$profile_kind" != "metric" ]]; then printf '%s\n' "$input_report" > "$run_dir/input_verification.json"; fi
+  git -C "$REPO_ROOT" rev-parse HEAD > "$run_dir/repo_commit.txt" 2>/dev/null || true
+  git -C "$REPO_ROOT" status --short > "$run_dir/repo_status.txt" 2>/dev/null || true
+  find "$REPO_ROOT/Baseline" "$REPO_ROOT/Ours/src" "$SCRIPT_DIR" -type f \( -name '*.py' -o -name '*.sh' \) -print0 \
+    | sort -z | xargs -0 -r sha256sum > "$run_dir/code_sha256.txt"
+  sha256sum "$profile_script" > "$run_dir/profile_sha256.txt"
+  "$python_bin" -m pip freeze > "$run_dir/pip_freeze.txt"
+fi
 if [[ ! -s "$run_dir/code_sha256.txt" || ! -s "$run_dir/pip_freeze.txt" ]]; then
   echo "Missing code or Python environment snapshot: $run_dir" >&2; exit 2
 fi
@@ -532,7 +762,11 @@ if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi > "$run_dir/nvidia_smi.txt" 2>&1 || true
 fi
 
-"$python_bin" -u "$profile_script" 2>&1 | tee "$run_dir/console.log"
+if [[ "$resume_run" == true ]]; then
+  "$python_bin" -u "$profile_script" 2>&1 | tee -a "$run_dir/console.log"
+else
+  "$python_bin" -u "$profile_script" 2>&1 | tee "$run_dir/console.log"
+fi
 if [[ "$profile_kind" == "full1073" ]]; then
   find "$REPO_ROOT/Baseline" "$REPO_ROOT/Ours/src" "$SCRIPT_DIR" -type f \( -name '*.py' -o -name '*.sh' \) -print0 \
     | sort -z | xargs -0 -r sha256sum > "$run_dir/code_sha256_after.txt"
@@ -545,7 +779,9 @@ fi
 case "$profile_kind" in
   full1073)
     "$python_bin" -u "$SCRIPT_DIR/verify_run.py" "$experiment" "$run_dir" 2>&1 | tee "$run_dir/verification.log"
-    "$python_bin" -u "$SCRIPT_DIR/prepare_metric_export.py" "$experiment" "$run_dir" 2>&1 | tee "$run_dir/metric_export.log"
+    if [[ "$experiment" != *_sd3_ffm ]]; then
+      "$python_bin" -u "$SCRIPT_DIR/prepare_metric_export.py" "$experiment" "$run_dir" 2>&1 | tee "$run_dir/metric_export.log"
+    fi
     ;;
   diagnostic)
     "$python_bin" -u "$SCRIPT_DIR/verify_diagnostic.py" "$experiment" "$run_dir" 2>&1 | tee "$run_dir/verification.log"

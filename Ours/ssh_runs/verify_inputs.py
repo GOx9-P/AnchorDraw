@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def verify_inputs(profile: str, coco_root: Path, run_profile: str | None = None) -> dict:
-    family = "sdxl" if "sdxl" in profile else "sd15"
-    suffix = "sdxl_1024x1024" if family == "sdxl" else "512x512"
+    family = "sd3" if "sd3" in profile else ("sdxl" if "sdxl" in profile else "sd15")
+    suffix = "sd3_1024x1024" if family == "sd3" else ("sdxl_1024x1024" if family == "sdxl" else "512x512")
     manifest = ROOT / "Ours/data_manifests" / f"coco_val2017_multidiffusion_coco_all_{suffix}_all.jsonl"
     if not manifest.is_file():
         raise FileNotFoundError(manifest)

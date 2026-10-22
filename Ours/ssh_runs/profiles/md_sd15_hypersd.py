@@ -93,6 +93,7 @@ HYPER_SD_GUIDANCE_SCALE = 1.0
 TARGET_SIZE = (512, 512)
 BATCH_SIZE = 8
 BASE_SEED = 2024
+BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", str(BASE_SEED)))
 
 # Original MultiDiffusion uses random-background bootstrapping.
 # With Hyper-SD 4-step, keep 1 bootstrap step to match the fast SemanticDraw SD1.5 spirit.
@@ -360,6 +361,7 @@ print("[SANITY] image stats:", image_stats(sanity_image))
 display(sanity_image.resize((384, 384)))
 
 # --- Source notebook cell 14 ---
+failed_images = []
 # Run generation for every sample in the manifest and display results.
 summary = []
 global_index = 0
@@ -368,67 +370,102 @@ for batch_index, batch in enumerate(loader):
     print(f"[BATCH] {batch_index + 1}/{len(loader)} - {len(batch['sample_ids'])} sample(s)")
 
     for local_index, sample_id in enumerate(batch["sample_ids"]):
-        payload = make_multidiffusion_payload(batch, local_index)
-        original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
-        overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
+        retry_overhead_sec = 0.0
+        for attempt in range(1, 4):
+            attempt_started = time.perf_counter()
+            tracked_lists = ('summary',)
+            list_lengths_before = {name: len(globals()[name]) for name in tracked_lists}
+            try:
+                payload = make_multidiffusion_payload(batch, local_index)
+                original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
+                overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
 
-        seed = BASE_SEED + global_index
-        seed_everything(seed)
+                seed = BASE_SEED + global_index
+                seed_everything(seed)
 
-        tic = time.perf_counter()
-        generated = md_hyper.generate(
-            masks=payload["all_masks"],
-            prompts=payload["prompts"],
-            negative_prompts=payload["negative_prompts"],
-            height=payload["height"],
-            width=payload["width"],
-            guidance_scale=HYPER_SD_GUIDANCE_SCALE,
-            bootstrapping=BOOTSTRAPPING,
-            num_inference_steps=HYPER_SD_NUM_INFERENCE_STEPS,
-        )
-        elapsed = time.perf_counter() - tic
+                tic = time.perf_counter()
+                generated = md_hyper.generate(
+                    masks=payload["all_masks"],
+                    prompts=payload["prompts"],
+                    negative_prompts=payload["negative_prompts"],
+                    height=payload["height"],
+                    width=payload["width"],
+                    guidance_scale=HYPER_SD_GUIDANCE_SCALE,
+                    bootstrapping=BOOTSTRAPPING,
+                    num_inference_steps=HYPER_SD_NUM_INFERENCE_STEPS,
+                )
+                elapsed = time.perf_counter() - tic + retry_overhead_sec
 
-        stem = f"{global_index:04d}_{payload['sample_id']}"
-        generated_path = OUTPUT_DIR / f"{stem}_generated.png"
-        overlay_path = OUTPUT_DIR / f"{stem}_overlay.png"
-        generated.save(generated_path)
-        overlay.save(overlay_path)
+                stem = f"{global_index:04d}_{payload['sample_id']}"
+                generated_path = OUTPUT_DIR / f"{stem}_generated.png"
+                overlay_path = OUTPUT_DIR / f"{stem}_overlay.png"
+                generated.save(generated_path)
+                overlay.save(overlay_path)
 
-        with Image.open(generated_path) as check_img:
-            check_img.verify()
+                with Image.open(generated_path) as check_img:
+                    check_img.verify()
 
-        summary.append({
-            "index": global_index,
-            "batch_index": batch_index,
-            "local_index": local_index,
-            "sample_id": payload["sample_id"],
-            "image_id": payload["image_id"],
-            "file_name": payload["file_name"],
-            "seed": seed,
-            "method": "multidiffusion",
-            "model_family": "sd15",
-            "model_id": MODEL_ID,
-            "sampler": "hyper-sd",
-            "scheduler": type(md_hyper.scheduler).__name__,
-            "timestep_spacing": getattr(md_hyper.scheduler.config, "timestep_spacing", None),
-            "hyper_sd_repo": HYPER_SD_REPO_ID,
-            "hyper_sd_weight": HYPER_SD_WEIGHT_NAME,
-            "num_inference_steps": HYPER_SD_NUM_INFERENCE_STEPS,
-            "guidance_scale": HYPER_SD_GUIDANCE_SCALE,
-            "bootstrapping": BOOTSTRAPPING,
-            "num_regions_including_background": len(payload["prompts"]),
-            "elapsed_sec": elapsed,
-            "generated_path": str(generated_path),
-            "overlay_path": str(overlay_path),
-        })
+                summary.append({
+                    "index": global_index,
+                    "batch_index": batch_index,
+                    "local_index": local_index,
+                    "sample_id": payload["sample_id"],
+                    "image_id": payload["image_id"],
+                    "file_name": payload["file_name"],
+                    "seed": seed,
+                    "method": "multidiffusion",
+                    "model_family": "sd15",
+                    "model_id": MODEL_ID,
+                    "sampler": "hyper-sd",
+                    "scheduler": type(md_hyper.scheduler).__name__,
+                    "timestep_spacing": getattr(md_hyper.scheduler.config, "timestep_spacing", None),
+                    "hyper_sd_repo": HYPER_SD_REPO_ID,
+                    "hyper_sd_weight": HYPER_SD_WEIGHT_NAME,
+                    "num_inference_steps": HYPER_SD_NUM_INFERENCE_STEPS,
+                    "guidance_scale": HYPER_SD_GUIDANCE_SCALE,
+                    "bootstrapping": BOOTSTRAPPING,
+                    "num_regions_including_background": len(payload["prompts"]),
+                    "elapsed_sec": elapsed,
+                    "generated_path": str(generated_path),
+                    "overlay_path": str(overlay_path),
+                })
 
-        should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
-        if should_display:
-            display_multidiffusion_result(payload, original, overlay, generated, elapsed, generated_path)
+                should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
+                if should_display:
+                    display_multidiffusion_result(payload, original, overlay, generated, elapsed, generated_path)
 
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception as exc:
+                import traceback
+                rolled_back = any(len(globals()[name]) > list_lengths_before[name] for name in tracked_lists)
+                for name in tracked_lists:
+                    del globals()[name][list_lengths_before[name]:]
+                if rolled_back:
+                    try:
+                        pass
+                    except Exception as checkpoint_error:
+                        print(f"[CHECKPOINT ERROR] index={global_index}: {checkpoint_error}", flush=True)
+                attempt_elapsed_sec = time.perf_counter() - attempt_started
+                retry_overhead_sec += attempt_elapsed_sec
+                failure = {"index": global_index, "seed": BASE_SEED + global_index,
+                           "sample_id": str(locals().get("sample_id", "")),
+                           "attempt": attempt, "attempt_elapsed_sec": attempt_elapsed_sec,
+                           "error": repr(exc),
+                           "traceback": traceback.format_exc()}
+                with (WORK_DIR / "failed_images.jsonl").open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(failure, ensure_ascii=False) + "\n")
+                print(f"[IMAGE ERROR] index={global_index} attempt={attempt}/3: {exc}", flush=True)
+                if attempt == 3:
+                    failed_images.append(global_index)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                break
         global_index += 1
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+
+if failed_images:
+    raise RuntimeError(f"Run incomplete: {len(failed_images)} manifest indices failed after three attempts: {failed_images}")
 
 summary_path = OUTPUT_DIR / "generation_summary.json"
 with summary_path.open("w", encoding="utf-8") as f:

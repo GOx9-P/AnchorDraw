@@ -98,6 +98,7 @@ LIGHTNING_REPO_ID = "ByteDance/SDXL-Lightning"
 LIGHTNING_WEIGHT_NAME = "sdxl_lightning_4step_unet.safetensors"
 TARGET_SIZE = (1024, 1024)
 BASE_SEED = 2024
+BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", str(BASE_SEED)))
 NEGATIVE_PROMPT = ""
 
 EULER_TIMESTEP_SPACING = "trailing"
@@ -471,6 +472,7 @@ else:
     print("[INFO] MD full-mask sanity skipped. Manifest generation will test MD behavior.")
 
 # --- Source notebook cell 14 ---
+failed_images = []
 # Chạy generation cho mọi sample trong manifest và hiển thị kết quả.
 summary = []
 global_index = 0
@@ -479,71 +481,106 @@ for batch_index, batch in enumerate(loader):
     print(f"[BATCH] {batch_index + 1}/{len(loader)} - {len(batch['sample_ids'])} sample(s)")
 
     for local_index, sample_id in enumerate(batch["sample_ids"]):
-        payload = make_multidiffusion_payload(batch, local_index)
-        original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
-        overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
+        retry_overhead_sec = 0.0
+        for attempt in range(1, 4):
+            attempt_started = time.perf_counter()
+            tracked_lists = ('summary',)
+            list_lengths_before = {name: len(globals()[name]) for name in tracked_lists}
+            try:
+                payload = make_multidiffusion_payload(batch, local_index)
+                original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
+                overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
 
-        seed = BASE_SEED + global_index
-        seed_everything(seed)
+                seed = BASE_SEED + global_index
+                seed_everything(seed)
 
-        tic = time.perf_counter()
-        generated = md_euler.generate(
-            masks=payload["all_masks"],
-            prompts=payload["prompts"],
-            negative_prompts=payload["negative_prompts"],
-            height=payload["height"],
-            width=payload["width"],
-            guidance_scale=EULER_GUIDANCE_SCALE,
-            bootstrapping=BOOTSTRAPPING,
-        )
-        elapsed = time.perf_counter() - tic
+                tic = time.perf_counter()
+                generated = md_euler.generate(
+                    masks=payload["all_masks"],
+                    prompts=payload["prompts"],
+                    negative_prompts=payload["negative_prompts"],
+                    height=payload["height"],
+                    width=payload["width"],
+                    guidance_scale=EULER_GUIDANCE_SCALE,
+                    bootstrapping=BOOTSTRAPPING,
+                )
+                elapsed = time.perf_counter() - tic + retry_overhead_sec
 
-        stem = f"{global_index:04d}_{payload['sample_id']}"
-        generated_path = GENERATED_IMAGES_DIR / f"{stem}_generated.png"
-        overlay_path = OVERLAY_IMAGES_DIR / f"{stem}_overlay.png"
-        generated.save(generated_path)
-        overlay.save(overlay_path)
+                stem = f"{global_index:04d}_{payload['sample_id']}"
+                generated_path = GENERATED_IMAGES_DIR / f"{stem}_generated.png"
+                overlay_path = OVERLAY_IMAGES_DIR / f"{stem}_overlay.png"
+                generated.save(generated_path)
+                overlay.save(overlay_path)
 
-        with Image.open(generated_path) as check_img:
-            check_img.verify()
+                with Image.open(generated_path) as check_img:
+                    check_img.verify()
 
-        summary.append({
-            "index": global_index,
-            "batch_index": batch_index,
-            "local_index": local_index,
-            "sample_id": payload["sample_id"],
-            "image_id": payload["image_id"],
-            "file_name": payload["file_name"],
-            "seed": seed,
-            "method": "multidiffusion",
-            "model_family": "sdxl",
-            "model_id": MODEL_ID,
-            "sampler": "euler_discrete",
-            "scheduler": type(md_euler.scheduler).__name__,
-            "lightning_repo": LIGHTNING_REPO_ID,
-            "lightning_weight": LIGHTNING_WEIGHT_NAME,
-            "euler_t_index_list": EULER_T_INDEX_LIST,
-            "num_schedule_steps": EULER_SCHEDULE_STEPS,
-            "guidance_scale": EULER_GUIDANCE_SCALE,
-            "bootstrapping": BOOTSTRAPPING,
-            "sdxl_view_profile": SDXL_VIEW_PROFILE,
-            "sdxl_view_checklist_id": SDXL_VIEW_CHECKLIST_ID,
-            "sdxl_view_window_size": SDXL_VIEW_WINDOW_SIZE,
-            "sdxl_view_stride": SDXL_VIEW_STRIDE,
-            "sdxl_view_count": len(sdxl_views),
-            "num_regions_including_background": len(payload["prompts"]),
-            "elapsed_sec": elapsed,
-            "generated_path": str(generated_path),
-            "overlay_path": str(overlay_path),
-        })
+                summary.append({
+                    "index": global_index,
+                    "batch_index": batch_index,
+                    "local_index": local_index,
+                    "sample_id": payload["sample_id"],
+                    "image_id": payload["image_id"],
+                    "file_name": payload["file_name"],
+                    "seed": seed,
+                    "method": "multidiffusion",
+                    "model_family": "sdxl",
+                    "model_id": MODEL_ID,
+                    "sampler": "euler_discrete",
+                    "scheduler": type(md_euler.scheduler).__name__,
+                    "lightning_repo": LIGHTNING_REPO_ID,
+                    "lightning_weight": LIGHTNING_WEIGHT_NAME,
+                    "euler_t_index_list": EULER_T_INDEX_LIST,
+                    "num_schedule_steps": EULER_SCHEDULE_STEPS,
+                    "guidance_scale": EULER_GUIDANCE_SCALE,
+                    "bootstrapping": BOOTSTRAPPING,
+                    "sdxl_view_profile": SDXL_VIEW_PROFILE,
+                    "sdxl_view_checklist_id": SDXL_VIEW_CHECKLIST_ID,
+                    "sdxl_view_window_size": SDXL_VIEW_WINDOW_SIZE,
+                    "sdxl_view_stride": SDXL_VIEW_STRIDE,
+                    "sdxl_view_count": len(sdxl_views),
+                    "num_regions_including_background": len(payload["prompts"]),
+                    "elapsed_sec": elapsed,
+                    "generated_path": str(generated_path),
+                    "overlay_path": str(overlay_path),
+                })
 
-        should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
-        if should_display:
-            display_multidiffusion_result(payload, original, overlay, generated, elapsed, generated_path)
+                should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
+                if should_display:
+                    display_multidiffusion_result(payload, original, overlay, generated, elapsed, generated_path)
 
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception as exc:
+                import traceback
+                rolled_back = any(len(globals()[name]) > list_lengths_before[name] for name in tracked_lists)
+                for name in tracked_lists:
+                    del globals()[name][list_lengths_before[name]:]
+                if rolled_back:
+                    try:
+                        pass
+                    except Exception as checkpoint_error:
+                        print(f"[CHECKPOINT ERROR] index={global_index}: {checkpoint_error}", flush=True)
+                attempt_elapsed_sec = time.perf_counter() - attempt_started
+                retry_overhead_sec += attempt_elapsed_sec
+                failure = {"index": global_index, "seed": BASE_SEED + global_index,
+                           "sample_id": str(locals().get("sample_id", "")),
+                           "attempt": attempt, "attempt_elapsed_sec": attempt_elapsed_sec,
+                           "error": repr(exc),
+                           "traceback": traceback.format_exc()}
+                with (WORK_DIR / "failed_images.jsonl").open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(failure, ensure_ascii=False) + "\n")
+                print(f"[IMAGE ERROR] index={global_index} attempt={attempt}/3: {exc}", flush=True)
+                if attempt == 3:
+                    failed_images.append(global_index)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                break
         global_index += 1
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+
+if failed_images:
+    raise RuntimeError(f"Run incomplete: {len(failed_images)} manifest indices failed after three attempts: {failed_images}")
 
 summary_path = OUTPUT_DIR / "generation_summary.json"
 with summary_path.open("w", encoding="utf-8") as f:

@@ -103,6 +103,8 @@ class SemanticDraw3Pipeline(nn.Module):
         dtype: torch.dtype = torch.float16,
         hf_key: Optional[str] = None,
         lora_key: Optional[str] = None,
+        hf_revision: Optional[str] = None,
+        lora_revision: Optional[str] = None,
         load_from_local: bool = False, # Turn on if you have already downloaed LoRA & Hugging Face hub is down.
         default_mask_std: float = 1.0, # 8.0
         default_mask_strength: float = 1.0,
@@ -188,21 +190,27 @@ class SemanticDraw3Pipeline(nn.Module):
             print(f'[INFO] Using Hugging Face custom model key: {hf_key}')
         else:
             hf_key = "stabilityai/stable-diffusion-3-medium-diffusers"
+        if lora_key is None:
+            lora_key = "jasperai/flash-sd3"
 
         transformer = SD3Transformer2DModel.from_pretrained(
             hf_key,
             subfolder="transformer",
             torch_dtype=torch.float16,
+            revision=hf_revision,
         ).to(self.device)
 
-        transformer = PeftModel.from_pretrained(transformer, "jasperai/flash-sd3").to(self.device)
+        transformer = PeftModel.from_pretrained(
+            transformer, lora_key, revision=lora_revision
+        ).to(self.device)
 
         self.pipe = StableDiffusion3Pipeline.from_pretrained(
-            "stabilityai/stable-diffusion-3-medium-diffusers",
+            hf_key,
             transformer=transformer,
             torch_dtype=torch.float16,
             text_encoder_3=None,
-            tokenizer_3=None
+            tokenizer_3=None,
+            revision=hf_revision,
         ).to(self.device)
 
         # Create model
@@ -210,9 +218,9 @@ class SemanticDraw3Pipeline(nn.Module):
             self.i2t_processor = Blip2Processor.from_pretrained('Salesforce/blip2-opt-2.7b')
             self.i2t_model = Blip2ForConditionalGeneration.from_pretrained('Salesforce/blip2-opt-2.7b')
 
-        # Use SDXL-Lightning LoRA by default.
+        # Use the Flash-SD3 scheduler for the SD3 adapter.
         self.pipe.scheduler = FlashFlowMatchEulerDiscreteScheduler.from_pretrained(
-            "stabilityai/stable-diffusion-3-medium-diffusers", subfolder="scheduler")
+            hf_key, subfolder="scheduler", revision=hf_revision)
         self.pipe = self.pipe.to(self.device)
 
         self.scheduler = self.pipe.scheduler
@@ -356,7 +364,9 @@ class SemanticDraw3Pipeline(nn.Module):
 
         vae = self.vae if vae is None else vae
         imgs = 2 * imgs - 1
-        latents = vae.config.scaling_factor * _retrieve_latents(vae.encode(imgs), generator=generator)
+        latents = (
+            _retrieve_latents(vae.encode(imgs), generator=generator) - vae.config.shift_factor
+        ) * vae.config.scaling_factor
         return latents
 
     @torch.no_grad()
@@ -374,10 +384,27 @@ class SemanticDraw3Pipeline(nn.Module):
             encoder. Shape: (B, 3, H, W).
         """
         vae = self.vae if vae is None else vae
-        latents = 1 / vae.config.scaling_factor * latents
-        imgs = vae.decode(latents).sample
+        imgs = self._decode_vae_tensor(latents, vae)
         imgs = (imgs / 2 + 0.5).clip_(0, 1)
         return imgs
+
+    @staticmethod
+    def _decode_vae_tensor(latents: torch.Tensor, vae: nn.Module) -> torch.Tensor:
+        """Respect the SD3 VAE's float32 decode requirement when configured."""
+        original_dtype = next(vae.parameters()).dtype
+        needs_upcast = original_dtype == torch.float16 and bool(
+            getattr(vae.config, 'force_upcast', False)
+        )
+        if needs_upcast:
+            vae.to(dtype=torch.float32)
+        try:
+            vae_dtype = next(vae.parameters()).dtype
+            latents = latents.to(dtype=vae_dtype)
+            latents = (latents / vae.config.scaling_factor) + vae.config.shift_factor
+            return vae.decode(latents, return_dict=False)[0]
+        finally:
+            if needs_upcast:
+                vae.to(dtype=original_dtype)
 
     @torch.no_grad()
     def get_white_background(self, height: int, width: int) -> torch.Tensor:
@@ -397,11 +424,14 @@ class SemanticDraw3Pipeline(nn.Module):
             version of the stored white latent is returned if the requested
             size is smaller than what we already have created.
         """
-        if not hasattr(self, 'white') or self.white.shape[-2] < height or self.white.shape[-1] < width:
+        latent_height = (height + self.vae_scale_factor - 1) // self.vae_scale_factor
+        latent_width = (width + self.vae_scale_factor - 1) // self.vae_scale_factor
+        if (not hasattr(self, 'white') or self.white.shape[-2] < latent_height
+                or self.white.shape[-1] < latent_width):
             white = torch.ones(1, 3, height, width, dtype=self.dtype, device=self.device)
             self.white = self.encode_imgs(white)
             return self.white
-        return self.white[..., :(height // self.vae_scale_factor), :(width // self.vae_scale_factor)]
+        return self.white[..., :latent_height, :latent_width]
 
     @torch.no_grad()
     def process_mask(
@@ -659,6 +689,7 @@ class SemanticDraw3Pipeline(nn.Module):
         output_type = 'pil',
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         clip_skip: Optional[int] = None,
+        step_controller: Optional[Any] = None,
     ) -> Image.Image:
         r"""Arbitrary-size image generation from multiple pairs of (regional)
         text prompt-mask pairs.
@@ -836,6 +867,11 @@ class SemanticDraw3Pipeline(nn.Module):
                     prompts = [p + suffix + background_prompt for p in prompts]
                 prompts = [background_prompt] + prompts
                 negative_prompts = [background_negative_prompt] + negative_prompts
+                # The generated background is now a regular denoised region.
+                # Keep the counters used for latent replication in sync.
+                num_masks = fg_masks.shape[0]
+                num_prompts = len(prompts)
+                num_nprompts = len(negative_prompts)
                 has_background = False # Regard that background does not exist.
             else:
                 if background is None and background_prompt is None:
@@ -864,6 +900,13 @@ class SemanticDraw3Pipeline(nn.Module):
             height_ = min(height, tile_size)
             width_ = min(width, tile_size)
             white = self.get_white_background(height, width) # (1, 4, h, w)
+        if step_controller is not None:
+            if height > tile_size or width > tile_size:
+                raise ValueError('SD3 step controller currently supports one latent view only.')
+            step_controller.begin(
+                height=height, width=width, num_regions=num_masks,
+                bootstrap_steps=bootstrap_steps, masks=fg_masks,
+            )
 
 
         ### Prepare text embeddings (optimized for the minimal encoder batch size)
@@ -1010,6 +1053,8 @@ class SemanticDraw3Pipeline(nn.Module):
                     continue
 
                 fg_mask = fg_masks[:, i]
+                if step_controller is not None:
+                    fg_mask = step_controller.prepare_step(i, t, fg_mask)
                 bg_mask = bg_masks[i:i + 1]
 
                 value.zero_()
@@ -1029,7 +1074,12 @@ class SemanticDraw3Pipeline(nn.Module):
                         latent_ = (1.0 - fg_mask_) * bg_latent_ + fg_mask_ * latent_
 
                         # Centering.
-                        latent_ = shift_to_mask_bbox_center(latent_, fg_mask_, reverse=True)
+                        if step_controller is None:
+                            latent_ = shift_to_mask_bbox_center(latent_, fg_mask_, reverse=True)
+                        else:
+                            latent_ = step_controller.center_latents(i, latent_, fg_mask_)
+                    elif step_controller is not None:
+                        latent_ = step_controller.center_latents(i, latent_, fg_mask_)
 
                     # expand the latents if we are doing classifier free guidance
                     latent_model_input = torch.cat([latent_] * 2) if do_classifier_free_guidance else latent_
@@ -1045,6 +1095,8 @@ class SemanticDraw3Pipeline(nn.Module):
                         joint_attention_kwargs=joint_attention_kwargs,
                         return_dict=False,
                     )[0]
+                    if not torch.isfinite(noise_pred).all():
+                        raise FloatingPointError(f'SD3 transformer produced NaN/Inf at step {i}, view {j}.')
 
                     if do_classifier_free_guidance:
                         noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
@@ -1054,15 +1106,23 @@ class SemanticDraw3Pipeline(nn.Module):
                         noise_pred = rescale_noise_cfg(noise_pred, noise_pred_cond, guidance_rescale=guidance_rescale)
 
                     latent_ = self.scheduler_step(noise_pred, i, latent_)
+                    if not torch.isfinite(latent_).all():
+                        raise FloatingPointError(f'SD3 scheduler produced NaN/Inf at step {i}, view {j}.')
 
-                    if i < bootstrap_steps:
+                    if step_controller is not None:
+                        latent_ = step_controller.uncenter_latents(i, latent_)
+                    elif i < bootstrap_steps:
                         # Uncentering.
                         latent_ = shift_to_mask_bbox_center(latent_, fg_mask_)
 
+                    if i < bootstrap_steps:
                         # Remove leakage (optional).
                         leak = (latent_ - bg_latent_).pow(2).mean(dim=1, keepdim=True)
                         leak_sigmoid = torch.sigmoid(leak / bootstrap_leak_sensitivity) * 2 - 1
                         fg_mask_ = fg_mask_ * leak_sigmoid
+
+                    if step_controller is not None:
+                        step_controller.record_denoised(i, t, latent_, fg_mask_)
 
                     # Mix the latents.
                     fg_mask_ = fg_mask_ * tile_masks[:, j:j + 1, h_start:h_end, w_start:w_end]
@@ -1070,6 +1130,8 @@ class SemanticDraw3Pipeline(nn.Module):
                     count_all[..., h_start:h_end, w_start:w_end] += fg_mask_.sum(dim=0, keepdim=True)
 
                 latent = torch.where(count_all > 0, value / count_all, value)
+                if not torch.isfinite(latent).all():
+                    raise FloatingPointError(f'SD3 region fusion produced NaN/Inf at step {i}.')
                 bg_mask = (1 - count_all).clip_(0, 1)  # (T, 1, h, w)
                 if has_background:
                     latent = (1 - bg_mask) * latent + bg_mask * noise_bg_latents[i + 1] # bg_latent
@@ -1078,11 +1140,15 @@ class SemanticDraw3Pipeline(nn.Module):
                 if i < len(self.timesteps) - 1:
                     latent = self.scheduler_add_noise(latent, None, i + 1)
 
-        if not output_type == "latent":
-            latent = (latent / self.vae.config.scaling_factor) + self.vae.config.shift_factor
-            image = self.vae.decode(latent, return_dict=False)[0]
-        else:
-            image = latent
+        if step_controller is not None:
+            step_controller.finish()
+
+        if output_type == 'latent':
+            return latent
+
+        image = self._decode_vae_tensor(latent, self.vae)
+        if not torch.isfinite(image).all():
+            raise FloatingPointError('SD3 VAE decode produced NaN/Inf.')
 
         # Return PIL Image.
         image = image[0].clip_(-1, 1) * 0.5 + 0.5
@@ -1090,5 +1156,5 @@ class SemanticDraw3Pipeline(nn.Module):
             fg_mask = torch.sum(masks_g, dim=0).clip_(0, 1)
             image = blend(image, background[0], fg_mask)
         else:
-            image = T.ToPILImage()(image)
+            image = T.ToPILImage()(image.detach().float().cpu())
         return image

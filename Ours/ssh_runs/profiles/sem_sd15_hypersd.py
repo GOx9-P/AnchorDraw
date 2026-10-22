@@ -63,6 +63,7 @@ SEMANTICDRAW_GUIDANCE_SCALE = 1.0
 TARGET_SIZE = (512, 512)
 BATCH_SIZE = 8
 BASE_SEED = 2024
+BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", str(BASE_SEED)))
 BOOTSTRAP_STEPS = 1
 MASK_STD = 1.0
 BACKGROUND_PROTOCOL = "foreground_then_complement_v1"
@@ -421,6 +422,7 @@ assert smd.default_num_inference_steps == HYPER_SD_NUM_INFERENCE_STEPS
 assert abs(float(smd.default_guidance_scale) - float(SEMANTICDRAW_GUIDANCE_SCALE)) < 1e-8
 
 # --- Source notebook cell 14 ---
+failed_images = []
 # Chạy generation cho mọi sample trong manifest và hiển thị kết quả.
 summary = []
 global_index = 0
@@ -429,65 +431,100 @@ for batch_index, batch in enumerate(loader):
     print(f"[BATCH] {batch_index + 1}/{len(loader)} - {len(batch['sample_ids'])} sample(s)")
 
     for local_index, sample_id in enumerate(batch["sample_ids"]):
-        payload = make_semanticdraw_payload(batch, local_index)
-        original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
-        overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
+        retry_overhead_sec = 0.0
+        for attempt in range(1, 4):
+            attempt_started = time.perf_counter()
+            tracked_lists = ('summary',)
+            list_lengths_before = {name: len(globals()[name]) for name in tracked_lists}
+            try:
+                payload = make_semanticdraw_payload(batch, local_index)
+                original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
+                overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
 
-        seed = BASE_SEED + global_index
-        seed_everything(seed)
+                seed = BASE_SEED + global_index
+                seed_everything(seed)
 
-        tic = time.perf_counter()
-        generated = smd(
-            prompts=payload["foreground_prompts"],
-            negative_prompts=payload["negative_prompts"][1:],
-            background_prompt=payload["prompts"][0],
-            background_negative_prompt=payload["negative_prompts"][0],
-            masks=payload["foreground_masks"].to(device=device, dtype=torch.float32),
-            mask_stds=MASK_STD,
-            mask_strengths=MASK_STRENGTH,
-            height=payload["height"],
-            width=payload["width"],
-            bootstrap_steps=BOOTSTRAP_STEPS,
-            preprocess_mask_cover_alpha=PREPROCESS_MASK_COVER_ALPHA,
-            guidance_scale=SEMANTICDRAW_GUIDANCE_SCALE,
-            do_blend=False,
-        )
-        elapsed = time.perf_counter() - tic
+                tic = time.perf_counter()
+                generated = smd(
+                    prompts=payload["foreground_prompts"],
+                    negative_prompts=payload["negative_prompts"][1:],
+                    background_prompt=payload["prompts"][0],
+                    background_negative_prompt=payload["negative_prompts"][0],
+                    masks=payload["foreground_masks"].to(device=device, dtype=torch.float32),
+                    mask_stds=MASK_STD,
+                    mask_strengths=MASK_STRENGTH,
+                    height=payload["height"],
+                    width=payload["width"],
+                    bootstrap_steps=BOOTSTRAP_STEPS,
+                    preprocess_mask_cover_alpha=PREPROCESS_MASK_COVER_ALPHA,
+                    guidance_scale=SEMANTICDRAW_GUIDANCE_SCALE,
+                    do_blend=False,
+                )
+                elapsed = time.perf_counter() - tic + retry_overhead_sec
 
-        stem = f"{global_index:04d}_{payload['sample_id']}"
-        generated_path = OUTPUT_DIR / f"{stem}_generated.png"
-        overlay_path = OUTPUT_DIR / f"{stem}_overlay.png"
-        generated.save(generated_path)
-        overlay.save(overlay_path)
+                stem = f"{global_index:04d}_{payload['sample_id']}"
+                generated_path = OUTPUT_DIR / f"{stem}_generated.png"
+                overlay_path = OUTPUT_DIR / f"{stem}_overlay.png"
+                generated.save(generated_path)
+                overlay.save(overlay_path)
 
-        summary.append({
-            "index": global_index,
-            "batch_index": batch_index,
-            "local_index": local_index,
-            "sample_id": payload["sample_id"],
-            "image_id": payload["image_id"],
-            "file_name": payload["file_name"],
-            "seed": seed,
-            "mask_std": MASK_STD,
-            "background_protocol": BACKGROUND_PROTOCOL,
-            "bootstrap_steps": BOOTSTRAP_STEPS,
-            "sampler": "hyper-sd",
-            "hyper_sd_repo": HYPER_SD_REPO_ID,
-            "hyper_sd_weight": HYPER_SD_WEIGHT_NAME,
-            "num_inference_steps": HYPER_SD_NUM_INFERENCE_STEPS,
-            "semanticdraw_guidance_scale": SEMANTICDRAW_GUIDANCE_SCALE,
-            "num_regions_including_background": len(payload["prompts"]),
-            "elapsed_sec": elapsed,
-            "generated_path": str(generated_path),
-            "overlay_path": str(overlay_path),
-        })
+                summary.append({
+                    "index": global_index,
+                    "batch_index": batch_index,
+                    "local_index": local_index,
+                    "sample_id": payload["sample_id"],
+                    "image_id": payload["image_id"],
+                    "file_name": payload["file_name"],
+                    "seed": seed,
+                    "mask_std": MASK_STD,
+                    "background_protocol": BACKGROUND_PROTOCOL,
+                    "bootstrap_steps": BOOTSTRAP_STEPS,
+                    "sampler": "hyper-sd",
+                    "hyper_sd_repo": HYPER_SD_REPO_ID,
+                    "hyper_sd_weight": HYPER_SD_WEIGHT_NAME,
+                    "num_inference_steps": HYPER_SD_NUM_INFERENCE_STEPS,
+                    "semanticdraw_guidance_scale": SEMANTICDRAW_GUIDANCE_SCALE,
+                    "num_regions_including_background": len(payload["prompts"]),
+                    "elapsed_sec": elapsed,
+                    "generated_path": str(generated_path),
+                    "overlay_path": str(overlay_path),
+                })
 
-        should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
-        if should_display:
-            display_smoke_result(payload, original, overlay, generated, elapsed, generated_path)
+                should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
+                if should_display:
+                    display_smoke_result(payload, original, overlay, generated, elapsed, generated_path)
 
+                torch.cuda.empty_cache()
+            except Exception as exc:
+                import traceback
+                rolled_back = any(len(globals()[name]) > list_lengths_before[name] for name in tracked_lists)
+                for name in tracked_lists:
+                    del globals()[name][list_lengths_before[name]:]
+                if rolled_back:
+                    try:
+                        pass
+                    except Exception as checkpoint_error:
+                        print(f"[CHECKPOINT ERROR] index={global_index}: {checkpoint_error}", flush=True)
+                attempt_elapsed_sec = time.perf_counter() - attempt_started
+                retry_overhead_sec += attempt_elapsed_sec
+                failure = {"index": global_index, "seed": BASE_SEED + global_index,
+                           "sample_id": str(locals().get("sample_id", "")),
+                           "attempt": attempt, "attempt_elapsed_sec": attempt_elapsed_sec,
+                           "error": repr(exc),
+                           "traceback": traceback.format_exc()}
+                with (WORK_DIR / "failed_images.jsonl").open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(failure, ensure_ascii=False) + "\n")
+                print(f"[IMAGE ERROR] index={global_index} attempt={attempt}/3: {exc}", flush=True)
+                if attempt == 3:
+                    failed_images.append(global_index)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                break
         global_index += 1
-        torch.cuda.empty_cache()
+
+if failed_images:
+    raise RuntimeError(f"Run incomplete: {len(failed_images)} manifest indices failed after three attempts: {failed_images}")
 
 assert len(summary) == dataset_size == 1073, f"Incomplete generation: {len(summary)}/{dataset_size}"
 summary_path = OUTPUT_DIR / "generation_summary.json"

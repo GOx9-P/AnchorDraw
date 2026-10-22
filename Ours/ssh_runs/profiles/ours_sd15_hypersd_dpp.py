@@ -57,6 +57,7 @@ TARGET_SIZE = (512, 512)
 EXPECTED_SAMPLES = 1073
 BATCH_SIZE = 8
 BASE_SEED = 2024
+BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", str(BASE_SEED)))
 BOOTSTRAP_STEPS = 1
 MASK_STD = 1.0
 MASK_STRENGTH = 1.0
@@ -429,6 +430,7 @@ torch.cuda.empty_cache()
 print("[OK] lambda=0 is pixel-identical to the original W03/L04 path.")
 
 # --- Source notebook cell 14 ---
+failed_images = []
 # Generate all 1073 samples with fixed lambda=0.01 and audit every student step.
 existing_generated = sorted(OUTPUT_DIR.glob("*_generated.png"))
 assert not existing_generated, f"{len(existing_generated)} stale images already exist in {OUTPUT_DIR}"
@@ -438,58 +440,94 @@ global_index = 0
 for batch_index, batch in enumerate(loader):
     print(f"[BATCH] {batch_index + 1}/{len(loader)} | completed={global_index}/{EXPECTED_SAMPLES}")
     for local_index in range(len(batch["sample_ids"])):
-        payload = make_payload(batch, local_index)
-        assert payload["sample_id"] == manifest_records[global_index]["sample_id"]
-        seed = BASE_SEED + global_index
-        generated, elapsed, records = generate_one(payload, seed, full_refiner)
-        applied = [record for record in records if record["applied"]]
-        assert len(records) == len(EXPECTED_TIMESTEPS)
-        assert len(applied) == GUIDE_STEPS
-        first = applied[0]
-        assert first["step_index"] == 0 and first["timestep"] == EXPECTED_TIMESTEPS[0]
-        assert first["teacher_timestep"] == EXPECTED_TIMESTEPS[1]
-        assert abs(float(first["teacher_guidance_scale"]) - DISTILL_LAMBDA) < 1e-12
-        assert abs(float(first["teacher_cfg_scale"]) - TEACHER_CFG_SCALE) < 1e-12
-        expected_l2 = DISTILL_LAMBDA * float(first["student_teacher_l2"])
-        actual_l2 = float(first["refinement_l2"])
-        assert abs(actual_l2 - expected_l2) <= max(2e-4, 0.01 * expected_l2)
+        retry_overhead_sec = 0.0
+        for attempt in range(1, 4):
+            attempt_started = time.perf_counter()
+            tracked_lists = ('summary', 'audit_rows')
+            list_lengths_before = {name: len(globals()[name]) for name in tracked_lists}
+            try:
+                payload = make_payload(batch, local_index)
+                assert payload["sample_id"] == manifest_records[global_index]["sample_id"]
+                seed = BASE_SEED + global_index
+                generated, elapsed, records = generate_one(payload, seed, full_refiner)
+                elapsed += retry_overhead_sec
+                applied = [record for record in records if record["applied"]]
+                assert len(records) == len(EXPECTED_TIMESTEPS)
+                assert len(applied) == GUIDE_STEPS
+                first = applied[0]
+                assert first["step_index"] == 0 and first["timestep"] == EXPECTED_TIMESTEPS[0]
+                assert first["teacher_timestep"] == EXPECTED_TIMESTEPS[1]
+                assert abs(float(first["teacher_guidance_scale"]) - DISTILL_LAMBDA) < 1e-12
+                assert abs(float(first["teacher_cfg_scale"]) - TEACHER_CFG_SCALE) < 1e-12
+                expected_l2 = DISTILL_LAMBDA * float(first["student_teacher_l2"])
+                actual_l2 = float(first["refinement_l2"])
+                assert abs(actual_l2 - expected_l2) <= max(2e-4, 0.01 * expected_l2)
 
-        stem = f"{global_index:04d}_{payload['sample_id']}"
-        generated_path = OUTPUT_DIR / f"{stem}_generated.png"
-        generated.save(generated_path)
-        with Image.open(generated_path) as check_image:
-            assert check_image.convert("RGB").size == TARGET_SIZE
-        summary.append({
-            "index": global_index,
-            "batch_index": batch_index,
-            "local_index": local_index,
-            "sample_id": payload["sample_id"],
-            "image_id": int(payload["image_id"]),
-            "file_name": payload["file_name"],
-            "seed": seed,
-            "experiment_id": EXPERIMENT_ID,
-            "method_id": METHOD_ID,
-            "attention_coordinate_policy": ATTENTION_COORDINATE_POLICY,
-            "model_family": "sd15",
-            "sampler": "DDIMScheduler trailing + Hyper-SD15-4steps LoRA",
-            "anchor_mode": BEST_ANCHOR_MODE,
-            "weight_policy": WEIGHT_POLICY,
-            "fixed_layer": FIXED_LAYER["layer_id"],
-            "spatial_sigma_latent": SIGMA_D,
-            "semantic_sigma_scale": SEMANTIC_SIGMA_SCALE,
-            "bootstrap_steps": BOOTSTRAP_STEPS,
-            "distillationpp_lambda": DISTILL_LAMBDA,
-            "distillationpp_guide_steps": GUIDE_STEPS,
-            "teacher_cfg_scale": TEACHER_CFG_SCALE,
-            "num_regions_including_background": len(payload["prompts"]),
-            "elapsed_sec": float(elapsed),
-            "generated_path": str(generated_path),
-        })
-        for record in records:
-            audit_rows.append({"sample_index": global_index, "sample_id": payload["sample_id"], "seed": seed, **record})
+                stem = f"{global_index:04d}_{payload['sample_id']}"
+                generated_path = OUTPUT_DIR / f"{stem}_generated.png"
+                generated.save(generated_path)
+                with Image.open(generated_path) as check_image:
+                    assert check_image.convert("RGB").size == TARGET_SIZE
+                summary.append({
+                    "index": global_index,
+                    "batch_index": batch_index,
+                    "local_index": local_index,
+                    "sample_id": payload["sample_id"],
+                    "image_id": int(payload["image_id"]),
+                    "file_name": payload["file_name"],
+                    "seed": seed,
+                    "experiment_id": EXPERIMENT_ID,
+                    "method_id": METHOD_ID,
+                    "attention_coordinate_policy": ATTENTION_COORDINATE_POLICY,
+                    "model_family": "sd15",
+                    "sampler": "DDIMScheduler trailing + Hyper-SD15-4steps LoRA",
+                    "anchor_mode": BEST_ANCHOR_MODE,
+                    "weight_policy": WEIGHT_POLICY,
+                    "fixed_layer": FIXED_LAYER["layer_id"],
+                    "spatial_sigma_latent": SIGMA_D,
+                    "semantic_sigma_scale": SEMANTIC_SIGMA_SCALE,
+                    "bootstrap_steps": BOOTSTRAP_STEPS,
+                    "distillationpp_lambda": DISTILL_LAMBDA,
+                    "distillationpp_guide_steps": GUIDE_STEPS,
+                    "teacher_cfg_scale": TEACHER_CFG_SCALE,
+                    "num_regions_including_background": len(payload["prompts"]),
+                    "elapsed_sec": float(elapsed),
+                    "generated_path": str(generated_path),
+                })
+                for record in records:
+                    audit_rows.append({"sample_index": global_index, "sample_id": payload["sample_id"], "seed": seed, **record})
+                del payload, generated, records, applied, first
+                torch.cuda.empty_cache()
+            except Exception as exc:
+                import traceback
+                rolled_back = any(len(globals()[name]) > list_lengths_before[name] for name in tracked_lists)
+                for name in tracked_lists:
+                    del globals()[name][list_lengths_before[name]:]
+                if rolled_back:
+                    try:
+                        pass
+                    except Exception as checkpoint_error:
+                        print(f"[CHECKPOINT ERROR] index={global_index}: {checkpoint_error}", flush=True)
+                attempt_elapsed_sec = time.perf_counter() - attempt_started
+                retry_overhead_sec += attempt_elapsed_sec
+                failure = {"index": global_index, "seed": BASE_SEED + global_index,
+                           "sample_id": str(locals().get("sample_id", "")),
+                           "attempt": attempt, "attempt_elapsed_sec": attempt_elapsed_sec,
+                           "error": repr(exc),
+                           "traceback": traceback.format_exc()}
+                with (WORK_DIR / "failed_images.jsonl").open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(failure, ensure_ascii=False) + "\n")
+                print(f"[IMAGE ERROR] index={global_index} attempt={attempt}/3: {exc}", flush=True)
+                if attempt == 3:
+                    failed_images.append(global_index)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                break
         global_index += 1
-        del payload, generated, records, applied, first
-        torch.cuda.empty_cache()
+
+if failed_images:
+    raise RuntimeError(f"Run incomplete: {len(failed_images)} manifest indices failed after three attempts: {failed_images}")
 
 assert global_index == EXPECTED_SAMPLES
 assert len(summary) == EXPECTED_SAMPLES

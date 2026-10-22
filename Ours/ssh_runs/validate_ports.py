@@ -65,7 +65,8 @@ def main() -> None:
             raise RuntimeError(f"Matched SDXL schedule/guidance differs: {baseline_name} vs {proposed_name}")
     available = {path.relative_to(OURS).as_posix() for path in OURS.rglob("*.ipynb")
                  if "sd3" not in path.name.lower()}
-    mapped = {notebook for notebook, _ in (*PORTS.values(), *DIAGNOSTIC_PORTS.values(), *METRIC_PORTS.values())}
+    mapped = {notebook for notebook, _ in (*PORTS.values(), *DIAGNOSTIC_PORTS.values(), *METRIC_PORTS.values())
+              if "sd3" not in notebook.lower()}
     if available != mapped:
         raise RuntimeError(f"Non-SD3 notebook coverage mismatch: missing={available-mapped}, stale={mapped-available}")
     for directory, inventory in ((OUTPUT, PORTS), (DIAGNOSTIC_OUTPUT, DIAGNOSTIC_PORTS),
@@ -99,8 +100,6 @@ def literal_constants(path):
 
 
 def check_one(directory, name, notebook, cells, *, full1073):
-        if "sd3" in name or "sd3" in notebook.lower():
-            raise RuntimeError(f"SD3 unexpectedly included: {name}")
         path = directory / f"{name}.py"
         text = path.read_text(encoding="utf-8")
         if text != render_one(name, notebook, cells):

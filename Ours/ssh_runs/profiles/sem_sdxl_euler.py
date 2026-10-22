@@ -64,6 +64,7 @@ EULER_GUIDANCE_SCALE = 0.0
 TARGET_SIZE = (1024, 1024)
 BATCH_SIZE = 1 if LOW_VRAM_KAGGLE_T4_MODE else 2
 BASE_SEED = 2024
+BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", str(BASE_SEED)))
 
 # Bootstrap cần encode white background qua VAE ở 1024x1024, dễ OOM trên T4 14-16GB.
 # File nay bat bootstrap=1 de chay thu cau hinh gan benchmark hon tren T4.
@@ -754,6 +755,7 @@ else:
     print("[TRACE] Bootstrap trace skipped.")
 
 # --- Source notebook cell 17 ---
+failed_images = []
 # Chạy generation cho mọi sample trong manifest và hiển thị kết quả.
 summary = []
 global_index = 0
@@ -762,91 +764,126 @@ for batch_index, batch in enumerate(loader):
     print(f"[BATCH] {batch_index + 1}/{len(loader)} - {len(batch['sample_ids'])} sample(s)")
 
     for local_index, sample_id in enumerate(batch["sample_ids"]):
-        payload = make_semanticdraw_payload(batch, local_index)
-        original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
-        overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
+        retry_overhead_sec = 0.0
+        for attempt in range(1, 4):
+            attempt_started = time.perf_counter()
+            tracked_lists = ('summary',)
+            list_lengths_before = {name: len(globals()[name]) for name in tracked_lists}
+            try:
+                payload = make_semanticdraw_payload(batch, local_index)
+                original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
+                overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
 
-        seed = BASE_SEED + global_index
-        seed_everything(seed)
+                seed = BASE_SEED + global_index
+                seed_everything(seed)
 
-        tic = time.perf_counter()
-        # SDXL baseline ổn định hơn khi dùng đúng API SemanticDraw:
-        # - foreground prompts/masks đi vào `prompts` và `masks`
-        # - COCO caption đi vào `background_prompt`
-        # Pipeline sẽ tự dựng background mask = 1 - union(foreground masks).
-        foreground_negative_prompts = [NEGATIVE_PROMPT for _ in payload["foreground_prompts"]]
-        generated = smd(
-            prompts=payload["foreground_prompts"],
-            negative_prompts=foreground_negative_prompts,
-            masks=payload["foreground_masks"].to(device=device, dtype=torch.float32),
-            background_prompt=payload["prompts"][0],
-            background_negative_prompt=NEGATIVE_PROMPT,
-            mask_stds=MASK_STD,
-            mask_strengths=MASK_STRENGTH,
-            height=payload["height"],
-            width=payload["width"],
-            num_inference_steps=SEMANTICDRAW_NUM_INFERENCE_STEPS,
-            guidance_scale=EULER_GUIDANCE_SCALE,
-            bootstrap_steps=BOOTSTRAP_STEPS,
-            preprocess_mask_cover_alpha=PREPROCESS_MASK_COVER_ALPHA,
-            guidance_rescale=0.0,
-            do_blend=False,
-        )
-        elapsed = time.perf_counter() - tic
-        generated = generated.convert("RGB")
-        generated_stats = pil_image_stats(generated)
-        print(f"[IMAGE] index={global_index} stats={generated_stats}")
-        if STOP_ON_NEAR_BLACK_OUTPUT and is_near_black_image(generated):
-            raise RuntimeError(
-                f"Generated image at index {global_index} is nearly black: {generated_stats}. "
-                "Check the plain sanity image above. If sanity is OK, the issue is in SemanticDraw SDXL mask/latent mixing."
-            )
-        if STOP_ON_STATIC_NOISE_OUTPUT and is_static_noise_image(generated):
-            raise RuntimeError(
-                f"Generated image at index {global_index} looks like raw static noise: {generated_stats}. "
-                "Plain SDXL-Lightning sanity is OK, so this run is not valid for benchmarking. "
-                "The issue is in the custom SemanticDraw SDXL denoising/mask loop or bootstrap schedule."
-            )
+                tic = time.perf_counter()
+                # SDXL baseline ổn định hơn khi dùng đúng API SemanticDraw:
+                # - foreground prompts/masks đi vào `prompts` và `masks`
+                # - COCO caption đi vào `background_prompt`
+                # Pipeline sẽ tự dựng background mask = 1 - union(foreground masks).
+                foreground_negative_prompts = [NEGATIVE_PROMPT for _ in payload["foreground_prompts"]]
+                generated = smd(
+                    prompts=payload["foreground_prompts"],
+                    negative_prompts=foreground_negative_prompts,
+                    masks=payload["foreground_masks"].to(device=device, dtype=torch.float32),
+                    background_prompt=payload["prompts"][0],
+                    background_negative_prompt=NEGATIVE_PROMPT,
+                    mask_stds=MASK_STD,
+                    mask_strengths=MASK_STRENGTH,
+                    height=payload["height"],
+                    width=payload["width"],
+                    num_inference_steps=SEMANTICDRAW_NUM_INFERENCE_STEPS,
+                    guidance_scale=EULER_GUIDANCE_SCALE,
+                    bootstrap_steps=BOOTSTRAP_STEPS,
+                    preprocess_mask_cover_alpha=PREPROCESS_MASK_COVER_ALPHA,
+                    guidance_rescale=0.0,
+                    do_blend=False,
+                )
+                elapsed = time.perf_counter() - tic + retry_overhead_sec
+                generated = generated.convert("RGB")
+                generated_stats = pil_image_stats(generated)
+                print(f"[IMAGE] index={global_index} stats={generated_stats}")
+                if STOP_ON_NEAR_BLACK_OUTPUT and is_near_black_image(generated):
+                    raise RuntimeError(
+                        f"Generated image at index {global_index} is nearly black: {generated_stats}. "
+                        "Check the plain sanity image above. If sanity is OK, the issue is in SemanticDraw SDXL mask/latent mixing."
+                    )
+                if STOP_ON_STATIC_NOISE_OUTPUT and is_static_noise_image(generated):
+                    raise RuntimeError(
+                        f"Generated image at index {global_index} looks like raw static noise: {generated_stats}. "
+                        "Plain SDXL-Lightning sanity is OK, so this run is not valid for benchmarking. "
+                        "The issue is in the custom SemanticDraw SDXL denoising/mask loop or bootstrap schedule."
+                    )
 
-        stem = f"{global_index:04d}_{payload['sample_id']}"
-        generated_path = GENERATED_IMAGES_DIR / f"{stem}_generated.png"
-        overlay_path = OVERLAY_IMAGES_DIR / f"{stem}_overlay.png"
-        generated.save(generated_path)
-        overlay.save(overlay_path)
+                stem = f"{global_index:04d}_{payload['sample_id']}"
+                generated_path = GENERATED_IMAGES_DIR / f"{stem}_generated.png"
+                overlay_path = OVERLAY_IMAGES_DIR / f"{stem}_overlay.png"
+                generated.save(generated_path)
+                overlay.save(overlay_path)
 
-        summary.append({
-            "index": global_index,
-            "batch_index": batch_index,
-            "local_index": local_index,
-            "sample_id": payload["sample_id"],
-            "image_id": payload["image_id"],
-            "file_name": payload["file_name"],
-            "seed": seed,
-            "model_family": "sdxl",
-            "sampler": "euler_discrete",
-            "scheduler": type(smd.scheduler).__name__,
-            "timestep_spacing": EULER_TIMESTEP_SPACING,
-            "lightning_repo": LIGHTNING_REPO_ID,
-            "lightning_weight": LIGHTNING_WEIGHT_NAME,
-            "plain_num_inference_steps": EULER_NUM_INFERENCE_STEPS,
-            "semanticdraw_num_inference_steps_arg": SEMANTICDRAW_NUM_INFERENCE_STEPS,
-            "semanticdraw_t_index_list": SEMANTICDRAW_T_INDEX_LIST,
-            "guidance_scale": EULER_GUIDANCE_SCALE,
-            "low_vram_kaggle_t4_mode": LOW_VRAM_KAGGLE_T4_MODE,
-            "bootstrap_steps": BOOTSTRAP_STEPS,
-            "mask_std": MASK_STD,
-            "num_regions_including_background": len(payload["foreground_prompts"]) + 1,
-            "elapsed_sec": elapsed,
-            "generated_path": str(generated_path),
-            "overlay_path": str(overlay_path),
-        })
+                summary.append({
+                    "index": global_index,
+                    "batch_index": batch_index,
+                    "local_index": local_index,
+                    "sample_id": payload["sample_id"],
+                    "image_id": payload["image_id"],
+                    "file_name": payload["file_name"],
+                    "seed": seed,
+                    "model_family": "sdxl",
+                    "sampler": "euler_discrete",
+                    "scheduler": type(smd.scheduler).__name__,
+                    "timestep_spacing": EULER_TIMESTEP_SPACING,
+                    "lightning_repo": LIGHTNING_REPO_ID,
+                    "lightning_weight": LIGHTNING_WEIGHT_NAME,
+                    "plain_num_inference_steps": EULER_NUM_INFERENCE_STEPS,
+                    "semanticdraw_num_inference_steps_arg": SEMANTICDRAW_NUM_INFERENCE_STEPS,
+                    "semanticdraw_t_index_list": SEMANTICDRAW_T_INDEX_LIST,
+                    "guidance_scale": EULER_GUIDANCE_SCALE,
+                    "low_vram_kaggle_t4_mode": LOW_VRAM_KAGGLE_T4_MODE,
+                    "bootstrap_steps": BOOTSTRAP_STEPS,
+                    "mask_std": MASK_STD,
+                    "num_regions_including_background": len(payload["foreground_prompts"]) + 1,
+                    "elapsed_sec": elapsed,
+                    "generated_path": str(generated_path),
+                    "overlay_path": str(overlay_path),
+                })
 
-        should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
-        if should_display:
-            display_smoke_result(payload, original, overlay, generated, elapsed, generated_path)
+                should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
+                if should_display:
+                    display_smoke_result(payload, original, overlay, generated, elapsed, generated_path)
 
+                torch.cuda.empty_cache()
+            except Exception as exc:
+                import traceback
+                rolled_back = any(len(globals()[name]) > list_lengths_before[name] for name in tracked_lists)
+                for name in tracked_lists:
+                    del globals()[name][list_lengths_before[name]:]
+                if rolled_back:
+                    try:
+                        pass
+                    except Exception as checkpoint_error:
+                        print(f"[CHECKPOINT ERROR] index={global_index}: {checkpoint_error}", flush=True)
+                attempt_elapsed_sec = time.perf_counter() - attempt_started
+                retry_overhead_sec += attempt_elapsed_sec
+                failure = {"index": global_index, "seed": BASE_SEED + global_index,
+                           "sample_id": str(locals().get("sample_id", "")),
+                           "attempt": attempt, "attempt_elapsed_sec": attempt_elapsed_sec,
+                           "error": repr(exc),
+                           "traceback": traceback.format_exc()}
+                with (WORK_DIR / "failed_images.jsonl").open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(failure, ensure_ascii=False) + "\n")
+                print(f"[IMAGE ERROR] index={global_index} attempt={attempt}/3: {exc}", flush=True)
+                if attempt == 3:
+                    failed_images.append(global_index)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                break
         global_index += 1
-        torch.cuda.empty_cache()
+
+if failed_images:
+    raise RuntimeError(f"Run incomplete: {len(failed_images)} manifest indices failed after three attempts: {failed_images}")
 
 assert len(summary) == dataset_size == 1073, f"Incomplete generation: {len(summary)}/{dataset_size}"
 summary_path = RUN_SUMMARY_PATH

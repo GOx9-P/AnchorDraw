@@ -72,6 +72,7 @@ DRIVE_RESULTS_ROOT = Path(str(WORK_DIR / 'drive/MyDrive/SemanticDraw_Results'))
 SKIP_EXISTING = False        # Để đo Time(s) sạch, benchmark chính nên để False.
 MAX_DISPLAY_RESULTS = 0
 BASE_SEED = 2024
+BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", str(BASE_SEED)))
 NEGATIVE_PROMPT = "artifacts, blurry, smooth texture, bad quality, distortions, unrealistic, distorted image"
 
 RUN_PROFILES = {
@@ -394,6 +395,7 @@ else:
     print("[INFO] Sanity check skipped.")
 
 # --- Source notebook cell 10 ---
+failed_images = []
 # Chạy generation cho từng sample trong manifest.
 # Lưu ý: BATCH_SIZE ở đây chỉ là dataloader batch size. Generation vẫn gọi từng ảnh một để giữ logic MultiDiffusion gốc.
 
@@ -405,88 +407,123 @@ for batch_index, batch in enumerate(loader):
     print(f"[BATCH] {batch_index + 1}/{len(loader)} - {batch_count} sample(s)")
 
     for local_index in range(batch_count):
-        payload = make_multidiffusion_payload(batch, local_index)
-        seed = BASE_SEED + global_index
-        stem = f"{global_index:04d}_{payload['sample_id']}"
-        generated_path = GENERATED_IMAGES_DIR / f"{stem}_generated.png"
-        overlay_path = OVERLAY_DIR / f"{stem}_overlay.png"
+        retry_overhead_sec = 0.0
+        for attempt in range(1, 4):
+            attempt_started = time.perf_counter()
+            tracked_lists = ('summary',)
+            list_lengths_before = {name: len(globals()[name]) for name in tracked_lists}
+            try:
+                payload = make_multidiffusion_payload(batch, local_index)
+                seed = BASE_SEED + global_index
+                stem = f"{global_index:04d}_{payload['sample_id']}"
+                generated_path = GENERATED_IMAGES_DIR / f"{stem}_generated.png"
+                overlay_path = OVERLAY_DIR / f"{stem}_overlay.png"
 
-        original = batch["images"][local_index].convert("RGB").resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
-        overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"])
-        overlay.save(overlay_path)
+                original = batch["images"][local_index].convert("RGB").resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
+                overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"])
+                overlay.save(overlay_path)
 
-        if SKIP_EXISTING and generated_path.exists():
-            generated = Image.open(generated_path).convert("RGB")
-            elapsed = 0.0
-            skipped = True
-        else:
-            seed_everything(seed)
-            torch.cuda.empty_cache()
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            t0 = time.perf_counter()
-            generated = md_ddim.generate(
-                masks=payload["masks"],
-                prompts=payload["prompts"],
-                negative_prompts=payload["negative_prompts"],
-                height=payload["height"],
-                width=payload["width"],
-                num_inference_steps=DDIM_NUM_INFERENCE_STEPS,
-                guidance_scale=DDIM_GUIDANCE_SCALE,
-                bootstrapping=BOOTSTRAPPING,
-                show_progress=True,
-            )
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            elapsed = time.perf_counter() - t0
-            generated.save(generated_path)
-            skipped = False
+                if SKIP_EXISTING and generated_path.exists():
+                    generated = Image.open(generated_path).convert("RGB")
+                    elapsed = 0.0
+                    skipped = True
+                else:
+                    seed_everything(seed)
+                    torch.cuda.empty_cache()
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    t0 = time.perf_counter()
+                    generated = md_ddim.generate(
+                        masks=payload["masks"],
+                        prompts=payload["prompts"],
+                        negative_prompts=payload["negative_prompts"],
+                        height=payload["height"],
+                        width=payload["width"],
+                        num_inference_steps=DDIM_NUM_INFERENCE_STEPS,
+                        guidance_scale=DDIM_GUIDANCE_SCALE,
+                        bootstrapping=BOOTSTRAPPING,
+                        show_progress=True,
+                    )
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    elapsed = time.perf_counter() - t0 + retry_overhead_sec
+                    generated.save(generated_path)
+                    skipped = False
 
-        stats = image_stats(generated)
-        row = {
-            "index": global_index,
-            "batch_index": batch_index,
-            "local_index": local_index,
-            "sample_id": payload["sample_id"],
-            "image_id": payload["image_id"],
-            "file_name": payload["file_name"],
-            "seed": seed,
-            "method": "multidiffusion",
-            "variant": "ref_original_region_based",
-            "model_family": MODEL_FAMILY,
-            "model_id": MODEL_ID,
-            "sampler": "ddim",
-            "scheduler": "DDIMScheduler",
-            "num_inference_steps": DDIM_NUM_INFERENCE_STEPS,
-            "guidance_scale": DDIM_GUIDANCE_SCALE,
-            "bootstrapping": BOOTSTRAPPING,
-            "precision_profile": PRECISION_PROFILE,
-            "load_dtype": str(LOAD_DTYPE),
-            "height": payload["height"],
-            "width": payload["width"],
-            "num_regions_including_background": len(payload["prompts"]),
-            "num_foreground_regions": len(payload["foreground_prompts"]),
-            "background_prompt": payload["background_prompt"],
-            "foreground_prompts": payload["foreground_prompts"],
-            "category_names": payload["category_names"],
-            "annotation_ids": payload["annotation_ids"],
-            "area_ratios": payload["area_ratios"],
-            "elapsed_sec": elapsed,
-            "skipped_existing": skipped,
-            "generated_path": str(generated_path),
-            "overlay_path": str(overlay_path),
-            "generated_stats": stats,
-        }
-        summary.append(row)
+                stats = image_stats(generated)
+                row = {
+                    "index": global_index,
+                    "batch_index": batch_index,
+                    "local_index": local_index,
+                    "sample_id": payload["sample_id"],
+                    "image_id": payload["image_id"],
+                    "file_name": payload["file_name"],
+                    "seed": seed,
+                    "method": "multidiffusion",
+                    "variant": "ref_original_region_based",
+                    "model_family": MODEL_FAMILY,
+                    "model_id": MODEL_ID,
+                    "sampler": "ddim",
+                    "scheduler": "DDIMScheduler",
+                    "num_inference_steps": DDIM_NUM_INFERENCE_STEPS,
+                    "guidance_scale": DDIM_GUIDANCE_SCALE,
+                    "bootstrapping": BOOTSTRAPPING,
+                    "precision_profile": PRECISION_PROFILE,
+                    "load_dtype": str(LOAD_DTYPE),
+                    "height": payload["height"],
+                    "width": payload["width"],
+                    "num_regions_including_background": len(payload["prompts"]),
+                    "num_foreground_regions": len(payload["foreground_prompts"]),
+                    "background_prompt": payload["background_prompt"],
+                    "foreground_prompts": payload["foreground_prompts"],
+                    "category_names": payload["category_names"],
+                    "annotation_ids": payload["annotation_ids"],
+                    "area_ratios": payload["area_ratios"],
+                    "elapsed_sec": elapsed,
+                    "skipped_existing": skipped,
+                    "generated_path": str(generated_path),
+                    "overlay_path": str(overlay_path),
+                    "generated_stats": stats,
+                }
+                summary.append(row)
 
-        with RUN_SUMMARY_PATH.open("w", encoding="utf-8") as f:
-            json.dump(summary, f, ensure_ascii=False, indent=2)
+                with RUN_SUMMARY_PATH.open("w", encoding="utf-8") as f:
+                    json.dump(summary, f, ensure_ascii=False, indent=2)
 
-        if MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS:
-            display_multidiffusion_result(payload, original, overlay, generated, elapsed, generated_path)
+                if MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS:
+                    display_multidiffusion_result(payload, original, overlay, generated, elapsed, generated_path)
 
+                torch.cuda.empty_cache()
+            except Exception as exc:
+                import traceback
+                rolled_back = any(len(globals()[name]) > list_lengths_before[name] for name in tracked_lists)
+                for name in tracked_lists:
+                    del globals()[name][list_lengths_before[name]:]
+                if rolled_back:
+                    try:
+                        pass
+                    except Exception as checkpoint_error:
+                        print(f"[CHECKPOINT ERROR] index={global_index}: {checkpoint_error}", flush=True)
+                attempt_elapsed_sec = time.perf_counter() - attempt_started
+                retry_overhead_sec += attempt_elapsed_sec
+                failure = {"index": global_index, "seed": BASE_SEED + global_index,
+                           "sample_id": str(locals().get("sample_id", "")),
+                           "attempt": attempt, "attempt_elapsed_sec": attempt_elapsed_sec,
+                           "error": repr(exc),
+                           "traceback": traceback.format_exc()}
+                with (WORK_DIR / "failed_images.jsonl").open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(failure, ensure_ascii=False) + "\n")
+                print(f"[IMAGE ERROR] index={global_index} attempt={attempt}/3: {exc}", flush=True)
+                if attempt == 3:
+                    failed_images.append(global_index)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                break
         global_index += 1
-        torch.cuda.empty_cache()
+
+if failed_images:
+    raise RuntimeError(f"Run incomplete: {len(failed_images)} manifest indices failed after three attempts: {failed_images}")
 
 summary_path = RUN_SUMMARY_PATH
 with summary_path.open("w", encoding="utf-8") as f:

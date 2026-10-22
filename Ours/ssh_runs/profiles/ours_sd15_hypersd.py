@@ -63,6 +63,7 @@ SEMANTICDRAW_GUIDANCE_SCALE = 1.0
 TARGET_SIZE = (512, 512)
 BATCH_SIZE = 8
 BASE_SEED = 2024
+BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", str(BASE_SEED)))
 BOOTSTRAP_STEPS = 1
 MASK_STD = 1.0  # Chuẩn sweep: 1.0 để Gaussian lowpass tạo gradient làm mờ
 MASK_STRENGTH = 1.0
@@ -469,6 +470,7 @@ assert FIXED_LAYER["layer_name"] in available_layer_names, f"Missing {FIXED_LAYE
 print(f"[OK] Fixed layer {FIXED_LAYER['layer_id']} verified: {FIXED_LAYER['layer_name']}")
 
 # --- Source notebook cell 12 ---
+failed_images = []
 # Chạy generation cho mọi sample trong manifest bằng thuật toán AnchorDraw trên Hyper-SD 4-step.
 summary = []
 global_index = 0
@@ -477,78 +479,113 @@ for batch_index, batch in enumerate(loader):
     print(f"[BATCH] {batch_index + 1}/{len(loader)} - {len(batch['sample_ids'])} sample(s)")
 
     for local_index, sample_id in enumerate(batch["sample_ids"]):
-        payload = make_semanticdraw_payload(batch, local_index)
-        original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
-        overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
+        retry_overhead_sec = 0.0
+        for attempt in range(1, 4):
+            attempt_started = time.perf_counter()
+            tracked_lists = ('summary',)
+            list_lengths_before = {name: len(globals()[name]) for name in tracked_lists}
+            try:
+                payload = make_semanticdraw_payload(batch, local_index)
+                original = batch["images"][local_index].resize((payload["width"], payload["height"]), Image.Resampling.BILINEAR)
+                overlay = make_mask_overlay(original, payload["foreground_masks"], payload["category_names"], alpha=0.45)
 
-        # Dùng cùng quy tắc seed với baseline: BASE_SEED (2024) + global_index
-        seed = BASE_SEED + global_index
-        seed_everything(seed)
+                # Dùng cùng quy tắc seed với baseline: BASE_SEED (2024) + global_index
+                seed = BASE_SEED + global_index
+                seed_everything(seed)
 
-        # Xác định token vị trí cho từng đối tượng tiền cảnh
-        token_indices = [
-            find_target_token_indices(smd.tokenizer, prompt, category)
-            for prompt, category in zip(payload["foreground_prompts"], payload["category_names"])
-        ]
+                # Xác định token vị trí cho từng đối tượng tiền cảnh
+                token_indices = [
+                    find_target_token_indices(smd.tokenizer, prompt, category)
+                    for prompt, category in zip(payload["foreground_prompts"], payload["category_names"])
+                ]
 
-        tic = time.perf_counter()
-        with SemanticAnchorCapture(smd.unet) as capture:
-            capture.configure(token_indices)
-            runtime = SemanticAnchorRuntime(smd, capture, image_size=TARGET_SIZE)
-            install_runtime_patches(runtime, FIXED_LAYER["layer_name"])
+                tic = time.perf_counter()
+                with SemanticAnchorCapture(smd.unet) as capture:
+                    capture.configure(token_indices)
+                    runtime = SemanticAnchorRuntime(smd, capture, image_size=TARGET_SIZE)
+                    install_runtime_patches(runtime, FIXED_LAYER["layer_name"])
 
-            generated, runtime_records = runtime.generate(
-                prompts=payload["prompts"],
-                negative_prompts=payload["negative_prompts"],
-                masks=payload["all_masks"].to(device=device, dtype=torch.float32),
-                foreground_masks=payload["foreground_masks"],
-                mode=BEST_ANCHOR_MODE,
-                weight_policy=WEIGHT_POLICY,
-                bootstrap_steps=BOOTSTRAP_STEPS,
-                topk_percent=TOPK_ATTENTION_PERCENT,
-                spatial_sigma_latent=float(SIGMA_D),
-                semantic_sigma_scale=float(SEMANTIC_SIGMA_SCALE),
-                mask_stds=MASK_STD,
-                mask_strengths=MASK_STRENGTH,
-                preprocess_mask_cover_alpha=PREPROCESS_MASK_COVER_ALPHA,
-                attention_layer_name=FIXED_LAYER["layer_name"],
-            )
-        elapsed = time.perf_counter() - tic
+                    generated, runtime_records = runtime.generate(
+                        prompts=payload["prompts"],
+                        negative_prompts=payload["negative_prompts"],
+                        masks=payload["all_masks"].to(device=device, dtype=torch.float32),
+                        foreground_masks=payload["foreground_masks"],
+                        mode=BEST_ANCHOR_MODE,
+                        weight_policy=WEIGHT_POLICY,
+                        bootstrap_steps=BOOTSTRAP_STEPS,
+                        topk_percent=TOPK_ATTENTION_PERCENT,
+                        spatial_sigma_latent=float(SIGMA_D),
+                        semantic_sigma_scale=float(SEMANTIC_SIGMA_SCALE),
+                        mask_stds=MASK_STD,
+                        mask_strengths=MASK_STRENGTH,
+                        preprocess_mask_cover_alpha=PREPROCESS_MASK_COVER_ALPHA,
+                        attention_layer_name=FIXED_LAYER["layer_name"],
+                    )
+                elapsed = time.perf_counter() - tic + retry_overhead_sec
 
-        stem = f"{global_index:04d}_{payload['sample_id']}"
-        generated_path = OUTPUT_DIR / f"{stem}_generated.png"
-        overlay_path = OUTPUT_DIR / f"{stem}_overlay.png"
-        generated.save(generated_path)
-        overlay.save(overlay_path)
+                stem = f"{global_index:04d}_{payload['sample_id']}"
+                generated_path = OUTPUT_DIR / f"{stem}_generated.png"
+                overlay_path = OUTPUT_DIR / f"{stem}_overlay.png"
+                generated.save(generated_path)
+                overlay.save(overlay_path)
 
-        summary.append({
-            "index": global_index,
-            "batch_index": batch_index,
-            "local_index": local_index,
-            "sample_id": payload["sample_id"],
-            "image_id": payload["image_id"],
-            "file_name": payload["file_name"],
-            "seed": seed,
-            "method_id": METHOD_ID,
-            "attention_coordinate_policy": ATTENTION_COORDINATE_POLICY,
-            "anchor_mode": BEST_ANCHOR_MODE,
-            "weight_policy": WEIGHT_POLICY,
-            "fixed_layer": FIXED_LAYER["layer_id"],
-            "spatial_sigma_latent": float(SIGMA_D),
-            "semantic_sigma_scale": float(SEMANTIC_SIGMA_SCALE),
-            "bootstrap_steps": BOOTSTRAP_STEPS,
-            "num_regions_including_background": len(payload["prompts"]),
-            "elapsed_sec": elapsed,
-            "generated_path": str(generated_path),
-            "overlay_path": str(overlay_path),
-        })
+                summary.append({
+                    "index": global_index,
+                    "batch_index": batch_index,
+                    "local_index": local_index,
+                    "sample_id": payload["sample_id"],
+                    "image_id": payload["image_id"],
+                    "file_name": payload["file_name"],
+                    "seed": seed,
+                    "method_id": METHOD_ID,
+                    "attention_coordinate_policy": ATTENTION_COORDINATE_POLICY,
+                    "anchor_mode": BEST_ANCHOR_MODE,
+                    "weight_policy": WEIGHT_POLICY,
+                    "fixed_layer": FIXED_LAYER["layer_id"],
+                    "spatial_sigma_latent": float(SIGMA_D),
+                    "semantic_sigma_scale": float(SEMANTIC_SIGMA_SCALE),
+                    "bootstrap_steps": BOOTSTRAP_STEPS,
+                    "num_regions_including_background": len(payload["prompts"]),
+                    "elapsed_sec": elapsed,
+                    "generated_path": str(generated_path),
+                    "overlay_path": str(overlay_path),
+                })
 
-        should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
-        if should_display:
-            display_smoke_result(payload, original, overlay, generated, elapsed, generated_path)
+                should_display = MAX_DISPLAY_RESULTS is None or global_index < MAX_DISPLAY_RESULTS
+                if should_display:
+                    display_smoke_result(payload, original, overlay, generated, elapsed, generated_path)
 
+                torch.cuda.empty_cache()
+            except Exception as exc:
+                import traceback
+                rolled_back = any(len(globals()[name]) > list_lengths_before[name] for name in tracked_lists)
+                for name in tracked_lists:
+                    del globals()[name][list_lengths_before[name]:]
+                if rolled_back:
+                    try:
+                        pass
+                    except Exception as checkpoint_error:
+                        print(f"[CHECKPOINT ERROR] index={global_index}: {checkpoint_error}", flush=True)
+                attempt_elapsed_sec = time.perf_counter() - attempt_started
+                retry_overhead_sec += attempt_elapsed_sec
+                failure = {"index": global_index, "seed": BASE_SEED + global_index,
+                           "sample_id": str(locals().get("sample_id", "")),
+                           "attempt": attempt, "attempt_elapsed_sec": attempt_elapsed_sec,
+                           "error": repr(exc),
+                           "traceback": traceback.format_exc()}
+                with (WORK_DIR / "failed_images.jsonl").open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(failure, ensure_ascii=False) + "\n")
+                print(f"[IMAGE ERROR] index={global_index} attempt={attempt}/3: {exc}", flush=True)
+                if attempt == 3:
+                    failed_images.append(global_index)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                break
         global_index += 1
-        torch.cuda.empty_cache()
+
+if failed_images:
+    raise RuntimeError(f"Run incomplete: {len(failed_images)} manifest indices failed after three attempts: {failed_images}")
 
 summary_path = OUTPUT_DIR / "generation_summary.json"
 with summary_path.open("w", encoding="utf-8") as f:
