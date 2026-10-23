@@ -107,6 +107,10 @@ def check_one(directory, name, notebook, cells, *, full1073):
         if ('"-m", "pip", "install"' in text or "'-m', 'pip', 'install'" in text):
             raise RuntimeError(f"Profile installs packages during a run: {path}")
         tree = ast.parse(text, filename=str(path))
+        display_shims = [node for node in tree.body
+                         if isinstance(node, ast.FunctionDef) and node.name == "display"]
+        if len(display_shims) != 1 or display_shims[0].args.vararg is None:
+            raise RuntimeError(f"Terminal display shim cannot accept multiple notebook outputs: {path}")
         lora_cleanup = next(
             (node for node in tree.body if isinstance(node, ast.FunctionDef)
              and node.name == "clear_existing_lora_adapters"), None

@@ -27,9 +27,10 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 def Markdown(value):
     return value
 
-def display(value):
-    if isinstance(value, str):
-        print(value)
+def display(*values):
+    for value in values:
+        if isinstance(value, str):
+            print(value)
 
 # Notebook: Ours/kaggle_semantic_anchor_experiments/semantic_anchor_sd15_hypersd_w03_l04_distillationpp_lambda_sweep128_kaggle.ipynb
 # Notebook SHA256: 75c20ddcc3d0dbeac4887276066faeae88a168711cc5b21f347920f82138746d

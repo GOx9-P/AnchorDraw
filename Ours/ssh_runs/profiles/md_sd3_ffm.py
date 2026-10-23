@@ -27,9 +27,10 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 def Markdown(value):
     return value
 
-def display(value):
-    if isinstance(value, str):
-        print(value)
+def display(*values):
+    for value in values:
+        if isinstance(value, str):
+            print(value)
 
 # Notebook: Ours/colab_multidiffusion_experiments/multidiffusion_sd3_flashflowmatch_naive_colab.ipynb
 # Notebook SHA256: a7321c180347152c60e584382fae823fde8d90b89e799f6261b8e1e8852559f7

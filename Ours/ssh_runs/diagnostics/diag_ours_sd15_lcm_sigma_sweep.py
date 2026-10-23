@@ -27,9 +27,10 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 def Markdown(value):
     return value
 
-def display(value):
-    if isinstance(value, str):
-        print(value)
+def display(*values):
+    for value in values:
+        if isinstance(value, str):
+            print(value)
 
 # Notebook: Ours/semantic_anchor_experiments/semantic_anchor_sd15_lcm_spatial_sigma_sweep_colab.ipynb
 # Notebook SHA256: 8ce001f3a2ef7aeab9962ba69a757332c591a9bb8e7bbac5927d0581f9b5ab02

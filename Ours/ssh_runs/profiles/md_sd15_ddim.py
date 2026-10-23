@@ -27,9 +27,10 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 def Markdown(value):
     return value
 
-def display(value):
-    if isinstance(value, str):
-        print(value)
+def display(*values):
+    for value in values:
+        if isinstance(value, str):
+            print(value)
 
 # Notebook: Ours/colab_multidiffusion_experiments/multidiffusion_sd15_ddim_ref_colab.ipynb
 # Notebook SHA256: 17b8f7689ec5df6bde47d8d92af1f2810d93ed75a3a2c91ab6b9bdfeaf29b971

@@ -27,9 +27,10 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 def Markdown(value):
     return value
 
-def display(value):
-    if isinstance(value, str):
-        print(value)
+def display(*values):
+    for value in values:
+        if isinstance(value, str):
+            print(value)
 
 # Notebook: Ours/kaggle_semanticdraw_smoke/semanticdraw_sd15_smoke_kaggle.ipynb
 # Notebook SHA256: cc6b3930ed57128b397cccc04a2db800470df0e40e8e25b73079aa237e296b94

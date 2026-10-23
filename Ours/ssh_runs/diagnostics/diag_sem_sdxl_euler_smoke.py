@@ -27,9 +27,10 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 def Markdown(value):
     return value
 
-def display(value):
-    if isinstance(value, str):
-        print(value)
+def display(*values):
+    for value in values:
+        if isinstance(value, str):
+            print(value)
 
 # Notebook: Ours/colab_semanticdraw_smoke/semanticdraw_sdxl_euler_smoke_bs2_colab.ipynb
 # Notebook SHA256: d33abbbbabcd8d8b58fa30b53573d7b2d255b43aab977dec56621ef56eaed70f

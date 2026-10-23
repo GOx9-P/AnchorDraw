@@ -27,9 +27,10 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 def Markdown(value):
     return value
 
-def display(value):
-    if isinstance(value, str):
-        print(value)
+def display(*values):
+    for value in values:
+        if isinstance(value, str):
+            print(value)
 
 # Notebook: Ours/kaggle_metric_eval/cleanfid_fid_eval_kaggle.ipynb
 # Notebook SHA256: 43f9c18fa11da3e7504757fa25bf5c35aad161a3e1c0f927850af4d28b7be713
