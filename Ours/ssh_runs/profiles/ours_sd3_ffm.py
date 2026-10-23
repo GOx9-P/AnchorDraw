@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/semantic_anchor_experiments/anchordraw_sd3_flashflowmatch_l04_sigmad4_colab.ipynb
-# Notebook SHA256: a0a6eb6bc0d4a3323a4d18a1177b6cb352fe57e07d220ffdaadef2fb04b1bd3c
+# Notebook SHA256: 889e3d2df2c61994c415e58f6a9829961e93fce1e8c46f7fc9d830b60602b040
 
 # --- Source notebook cell 6 ---
 from pathlib import Path

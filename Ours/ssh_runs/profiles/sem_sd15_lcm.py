@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/kaggle_semanticdraw_smoke/semanticdraw_sd15_lcm_full1073_kaggle.ipynb
-# Notebook SHA256: d1f02ff16d5a59317d9e5cb97a1176e421c7f40b525712c49cb607dee547f355
+# Notebook SHA256: 073335ff79c71cd6f72880acc8b9cd72606eba571a94ba59704cd8655a7c949e
 
 # --- Source notebook cell 4 ---
 # Cấu hình full manifest 1073 cho benchmark SD1.5 + LCM.

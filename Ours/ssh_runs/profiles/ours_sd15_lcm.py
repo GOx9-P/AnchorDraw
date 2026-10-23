@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/kaggle_semantic_anchor_experiments/semantic_anchor_sd15_lcm_w03_l04_sigmad4_full1073_kaggle.ipynb
-# Notebook SHA256: 8dfee8c61078d915f20695e984c816d1982a9d50572e7b9fd955ad21a059b690
+# Notebook SHA256: 74d4620d5d8e01617cacc482357ac298b655d83d4a4c248bcefbd9d4a1d5e4b4
 
 # --- Source notebook cell 4 ---
 # Cấu hình full manifest 1073 cho benchmark AnchorDraw SD1.5 + LCM + L04 + WM-03 + sigma_D=4.0.

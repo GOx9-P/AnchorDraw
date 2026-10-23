@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/semantic_anchor_experiments/semantic_anchor_sd15_hypersd_smoke8_colab.ipynb
-# Notebook SHA256: 34065428abb4ebd418887996d0f681f18db6f3e91e402544ec25c608f924dcf6
+# Notebook SHA256: 1d67ab5f4dceb16da6ed0ffd99faa987cd1fd01efdf8d2223eb5090c4c4e9f2f
 
 # --- Source notebook cell 3 ---
 # 2. Cấu hình thí nghiệm. Mặc định chạy smoke8 để so sánh với LCM.

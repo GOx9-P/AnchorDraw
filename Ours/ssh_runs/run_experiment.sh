@@ -390,6 +390,15 @@ if [[ "$profile_kind" == "suite" ]]; then
     exit 0
   fi
 
+  # A stale generated profile invalidates every experiment. Detect that once
+  # before downloading COCO or starting any GPU work, rather than reporting
+  # the same failure for each seed/profile.
+  if ! "$python_bin" "$SCRIPT_DIR/validate_ports.py" >/dev/null; then
+    echo "[SUITE ERROR] Notebook-to-terminal profile validation failed; no experiments started" >&2
+    exit 2
+  fi
+  echo "[SUITE] Notebook-to-terminal profiles verified"
+
   # A missing optional package is recorded against its profile, so later
   # independent experiments can still run.
   mkdir -p -- "$output_root"

@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/semantic_anchor_experiments/semantic_anchor_sd15_hypersd_spatial_sigma_sweep_colab.ipynb
-# Notebook SHA256: ee9f59e5dfb5230e195bfc81ce09eefad28b00527f9ece09cb233e754d751556
+# Notebook SHA256: 85321af18e3640671b68b639abd4466ff57bfe02fdbd0e54bb73f6bac162448c
 
 # --- Source notebook cell 3 ---
 # 2. Run configuration: WM-03 (Top-k + Adaptive Bilateral) + Bootstrap=1 + Layer L04 on Hyper-SD 4-step.

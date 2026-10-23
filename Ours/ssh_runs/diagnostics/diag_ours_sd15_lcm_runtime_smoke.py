@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/semantic_anchor_experiments/semantic_anchor_sd15_lcm_anchor_runtime_smoke8_colab.ipynb
-# Notebook SHA256: b01ed9648eaf88881457ecbb9e0f71b1edef6c5a38a59251b0d553bdd32ccf44
+# Notebook SHA256: ab81d9470a2c78cb1c8e004a8149d79549d59b2e4b6bad8d21aa0e26c5ec9932
 
 # --- Source notebook cell 3 ---
 # 2. Cấu hình ablation runtime. Mặc định smoke8 để kiểm tra ba nhánh cùng seed.

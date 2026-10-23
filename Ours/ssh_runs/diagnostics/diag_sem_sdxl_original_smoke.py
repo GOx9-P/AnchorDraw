@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/kaggle_semanticdraw_smoke/semanticdraw_sdxl_euler_original_baseline_smoke_bs2_kaggle.ipynb
-# Notebook SHA256: b193f3d12f9901318b873917d1db710eb8684164877e85d8433832c03ec9a01a
+# Notebook SHA256: 9c3b0ef3ab96f510b2fb78f133149c9461eb923451f60d9775cd97ec0a6f286b
 
 # --- Source notebook cell 3 ---
 # Cấu hình smoke test.

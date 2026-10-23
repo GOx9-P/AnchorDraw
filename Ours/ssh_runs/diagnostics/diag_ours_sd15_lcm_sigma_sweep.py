@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/semantic_anchor_experiments/semantic_anchor_sd15_lcm_spatial_sigma_sweep_colab.ipynb
-# Notebook SHA256: 327481bbb331798b160e2730640cbc159b9af019e1a2f810d977d0c2752560b0
+# Notebook SHA256: 8ce001f3a2ef7aeab9962ba69a757332c591a9bb8e7bbac5927d0581f9b5ab02
 
 # --- Source notebook cell 3 ---
 # 2. Run configuration: WM-03 (Top-k + Adaptive Bilateral) + Bootstrap=1 + Layer L04.

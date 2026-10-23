@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/colab_multidiffusion_experiments/multidiffusion_sd3_flashflowmatch_naive_colab.ipynb
-# Notebook SHA256: a7c4d346ff21d1cce8c2150788b829393014d668288c42eaf6731333e125277f
+# Notebook SHA256: a7321c180347152c60e584382fae823fde8d90b89e799f6261b8e1e8852559f7
 
 # --- Source notebook cell 4 ---
 # Cấu hình Colab cho MultiDiffusion naive SD3 + Flash Flow Match.

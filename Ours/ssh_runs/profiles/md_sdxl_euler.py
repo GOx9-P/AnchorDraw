@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/colab_multidiffusion_experiments/multidiffusion_sdxl_euler_colab.ipynb
-# Notebook SHA256: e13d8ddb3280669fb86166db61e0b34412a1543a46c6356bf6c3f4861cafd20f
+# Notebook SHA256: e9ab1ed87683e4c248ece1fcbe6194a04fd4583b1d920d3dd4a6ec12d0713b87
 
 # --- Source notebook cell 4 ---
 # Cấu hình Colab cho MultiDiffusion naive SDXL + Euler Discrete.

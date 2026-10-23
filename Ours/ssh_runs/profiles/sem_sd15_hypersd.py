@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/kaggle_semanticdraw_smoke/semanticdraw_sd15_hypersd_full1073_kaggle.ipynb
-# Notebook SHA256: 224c0528cd2f09232a03158c99bd0e76d9ef4433a2d830d3ffe6241657b89405
+# Notebook SHA256: 38010410c11d8b859b046151acd8d71fef2498da176864ee5e2851f7270b2e13
 
 # --- Source notebook cell 4 ---
 # Cấu hình full manifest 1073 cho benchmark SD1.5 + Hyper-SD.

@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/kaggle_semanticdraw_smoke/semanticdraw_sdxl_euler_full1073_kaggle.ipynb
-# Notebook SHA256: b7ce335d4bec196b4732d330908216bb58f7db5e82a68343d988517d97e8d9a3
+# Notebook SHA256: db5be4fa86ef6ddd8812339db612f9a1c1d205660063e9a46f892677c4d5db0c
 
 # --- Source notebook cell 4 ---
 # Cấu hình full manifest 1073 cho benchmark SDXL + Euler Discrete.

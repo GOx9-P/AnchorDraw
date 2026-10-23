@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/colab_semanticdraw_smoke/semanticdraw_sd3_flashflowmatch_full1073_colab.ipynb
-# Notebook SHA256: ba397c2acc329d7a0160ba21c4b7ba7bb328f24d30c2171427ccd270ceb39094
+# Notebook SHA256: 421534099fd5d00886fe8caf38fb62ba01915aa3058dbfbc0cefdb7a50845d44
 
 # --- Source notebook cell 6 ---
 from pathlib import Path

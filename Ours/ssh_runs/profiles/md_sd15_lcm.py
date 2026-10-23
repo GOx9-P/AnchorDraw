@@ -32,7 +32,7 @@ def display(value):
         print(value)
 
 # Notebook: Ours/kaggle_multidiffusion_experiments/multidiffusion_sd15_lcm_full1073_kaggle.ipynb
-# Notebook SHA256: 363e09ddf2f93f05014844bfe05bc94101f5a99fdc17a8b41a5fe12980b3f147
+# Notebook SHA256: 0229072683ac25f2eb5cf2a659d3010f356bdcca8389a069bb13fb0fe9c4b058
 
 # --- Source notebook cell 4 ---
 # Runtime profile for MultiDiffusion SD1.5 + LCM.

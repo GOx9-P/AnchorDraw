@@ -547,7 +547,10 @@ print('[OK] Real COCO subset ready:', len(real_paths))
 
 def render_one(profile: str, notebook_rel: str, cell_ids: list[int]) -> str:
     path = OURS / notebook_rel
-    notebook_bytes = path.read_bytes()
+    # Git stores text notebooks with LF, while a Windows checkout can have
+    # CRLF. Hash and parse the repository's canonical bytes so the generated
+    # profile is identical on Linux and Windows.
+    notebook_bytes = path.read_bytes().replace(b"\r\n", b"\n")
     notebook = json.loads(notebook_bytes)
     chunks = [PREAMBLE, f"# Notebook: Ours/{notebook_rel}\n",
               f"# Notebook SHA256: {hashlib.sha256(notebook_bytes).hexdigest()}\n"]
