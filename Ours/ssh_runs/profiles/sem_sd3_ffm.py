@@ -33,7 +33,7 @@ def display(*values):
             print(value)
 
 # Notebook: Ours/colab_semanticdraw_smoke/semanticdraw_sd3_flashflowmatch_full1073_colab.ipynb
-# Notebook SHA256: 421534099fd5d00886fe8caf38fb62ba01915aa3058dbfbc0cefdb7a50845d44
+# Notebook SHA256: 3df85bd5bdca746bc0739d6021dcd3f81bac3aae116cca2792570e365fe910d4
 
 # --- Source notebook cell 6 ---
 from pathlib import Path
@@ -45,7 +45,7 @@ import hashlib
 RUN_PROFILE = os.environ.get('RUN_PROFILE', 'smoke_bs2')  # choices: "smoke_bs2", "mini32", "full1073"
 
 # SD3 1024 khá nặng. BATCH_SIZE chỉ là dataloader batch, generation vẫn chạy tuần tự từng ảnh.
-COLAB_GPU_MODE = os.environ.get('COLAB_GPU_MODE', 'high_vram')  # choices: "low_vram", "high_vram"
+COLAB_GPU_MODE = os.environ.get('COLAB_GPU_MODE', 'high_vram')  # choices: "low_vram", "high_vram", "a100_80gb"
 LOW_VRAM_MODE = COLAB_GPU_MODE == "low_vram"
 
 MANIFEST_BY_PROFILE = {
@@ -60,7 +60,7 @@ EXPECTED_DATASET_SIZE_BY_PROFILE = {
 }
 
 assert RUN_PROFILE in MANIFEST_BY_PROFILE, f"Unknown RUN_PROFILE: {RUN_PROFILE}"
-assert COLAB_GPU_MODE in {"low_vram", "high_vram"}, f"Unknown COLAB_GPU_MODE: {COLAB_GPU_MODE}"
+assert COLAB_GPU_MODE in {"low_vram", "high_vram", "a100_80gb"}, f"Unknown COLAB_GPU_MODE: {COLAB_GPU_MODE}"
 
 RUN_MANIFEST = MANIFEST_BY_PROFILE[RUN_PROFILE]
 EXPECTED_DATASET_SIZE = EXPECTED_DATASET_SIZE_BY_PROFILE[RUN_PROFILE]
@@ -133,6 +133,8 @@ run_config = {
     "num_inference_steps": SEMANTICDRAW_NUM_INFERENCE_STEPS,
     "dtype": "float16",
     "run_profile": RUN_PROFILE,
+    "gpu_mode": COLAB_GPU_MODE,
+    "num_workers": NUM_WORKERS,
     "expected_samples": EXPECTED_DATASET_SIZE,
     "resolution": f"{TARGET_SIZE[0]}x{TARGET_SIZE[1]}",
     "model_family": MODEL_FAMILY,
@@ -188,7 +190,7 @@ run_config["pipeline_sha256"] = hashlib.sha256(pipeline_source.read_bytes()).hex
 immutable_keys = (
     "code_version", "base_seed", "white_bootstrap_seed", "negative_prompt", "num_inference_steps",
     "dtype", "data_source_sha256", "metrics_source_sha256",
-    "run_profile", "expected_samples", "resolution", "model_family", "model_id",
+    "run_profile", "gpu_mode", "batch_size", "num_workers", "expected_samples", "resolution", "model_family", "model_id",
     "diffusers_commit", "dependency_versions",
     "acceleration", "model_revision", "flash_sd3_revision", "sampler", "manifest_sha256", "pipeline_sha256", "bootstrap_steps",
     "t_index_list", "guidance_scale", "mask_std", "mask_strength",

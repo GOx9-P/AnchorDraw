@@ -737,13 +737,6 @@ case "$experiment" in
   md_sdxl_ddim) export DDIM_EXPERIMENT_PROFILE="ref_g75_b20_full_view" ;;
 esac
 export COLAB_GPU_MODE="$gpu_mode"
-if [[ "$experiment" == sem_sd3_ffm || "$experiment" == ours_sd3_ffm ]]; then
-  if [[ "$gpu_mode" == "low_vram" ]]; then
-    export COLAB_GPU_MODE="low_vram"
-  else
-    export COLAB_GPU_MODE="high_vram"
-  fi
-fi
 
 echo "[RUN] $experiment | kind=$profile_kind | tag=$run_tag | requested_gpu_mode=$gpu_mode | env_gpu_mode=$COLAB_GPU_MODE | output=$run_dir"
 if [[ "$resume_run" == true ]]; then
