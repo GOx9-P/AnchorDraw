@@ -33,7 +33,7 @@ def display(*values):
             print(value)
 
 # Notebook: Ours/colab_semanticdraw_smoke/semanticdraw_sdxl_euler_smoke_bs2_colab.ipynb
-# Notebook SHA256: d33abbbbabcd8d8b58fa30b53573d7b2d255b43aab977dec56621ef56eaed70f
+# Notebook SHA256: 841afbec38a388f150db8565c0b85805209fcf82776d9c8c552a67f993c604ac
 
 # --- Source notebook cell 4 ---
 # Cấu hình Colab cho SemanticDraw SDXL + Euler Discrete.
@@ -44,7 +44,7 @@ RUN_PROFILE = os.environ.get('RUN_PROFILE', 'full1073')  # choices: "smoke_bs2",
 
 # low_vram: phù hợp Colab T4/L4 khi muốn chạy an toàn.
 # high_vram_24gb: dùng khi có GPU nhiều VRAM hơn, ví dụ A100/RTX 4090.
-COLAB_GPU_MODE = os.environ.get('COLAB_GPU_MODE', 'high_vram_24gb')  # choices: "low_vram", "high_vram_24gb"
+COLAB_GPU_MODE = os.environ.get('COLAB_GPU_MODE', 'high_vram_24gb')  # choices: "low_vram", "high_vram_24gb", "a100_80gb"
 LOW_VRAM_COLAB_MODE = COLAB_GPU_MODE == "low_vram"
 
 MANIFEST_BY_PROFILE = {
@@ -57,7 +57,7 @@ EXPECTED_DATASET_SIZE_BY_PROFILE = {
 }
 
 assert RUN_PROFILE in MANIFEST_BY_PROFILE, f"Unknown RUN_PROFILE: {RUN_PROFILE}"
-assert COLAB_GPU_MODE in {"low_vram", "high_vram_24gb"}, f"Unknown COLAB_GPU_MODE: {COLAB_GPU_MODE}"
+assert COLAB_GPU_MODE in {"low_vram", "high_vram_24gb", "a100_80gb"}, f"Unknown COLAB_GPU_MODE: {COLAB_GPU_MODE}"
 
 RUN_MANIFEST = MANIFEST_BY_PROFILE[RUN_PROFILE]
 EXPECTED_DATASET_SIZE = EXPECTED_DATASET_SIZE_BY_PROFILE[RUN_PROFILE]
@@ -99,7 +99,7 @@ SAMPLE_TAG = "smoke2" if RUN_PROFILE == "smoke_bs2" else "full1073"
 RESOLUTION_TAG = str(TARGET_SIZE[0])
 SAMPLER_TAG = "euler"
 ACCEL_TAG = "lightning4"
-RUN_MODE_TAG = "colab_lvram" if LOW_VRAM_COLAB_MODE else "colab_24gb"
+RUN_MODE_TAG = "colab_lvram" if LOW_VRAM_COLAB_MODE else ("colab_a100_80gb" if COLAB_GPU_MODE == "a100_80gb" else "colab_24gb")
 EXPERIMENT_ID = (
     f"sdraw_sdxl_{ACCEL_TAG}_{SAMPLER_TAG}_"
     f"{RESOLUTION_TAG}_{SAMPLE_TAG}_"

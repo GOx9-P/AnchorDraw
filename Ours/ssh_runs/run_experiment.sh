@@ -20,6 +20,7 @@ usage() {
     '' \
     'No arguments: run 21 diagnostics once, then 17 benchmarks and 3 FID tools for each of 3 base seeds (2024, 10002024, 20002024).' \
     'This is the only Bash entrypoint. Use --list for all experiment IDs.' \
+    'Default GPU preset: a100_80gb (A100 80 GB).' \
     'SD3 requires accepted access to stabilityai/stable-diffusion-3-medium-diffusers and HF_TOKEN or a saved hf auth login on the SSH host.'
 }
 
@@ -35,7 +36,7 @@ list_profiles() {
 experiment=""; coco_root=""; output_root=""; run_tag=""
 dataset_root=""; export_dir=""; reference_dir=""; metric_experiments=""; ttur_fid_file=""
 python_bin="${PYTHON_BIN:-python3}"
-gpu_mode="high_vram_24gb"
+gpu_mode="a100_80gb"
 run_profile_override=""
 base_seed="2024"
 base_seed_explicit=false
@@ -377,8 +378,8 @@ if [[ "$profile_kind" == "suite" ]]; then
   done
   if [[ -z "$run_tag" ]]; then run_tag="$(date -u +%Y%m%dT%H%M%SZ)"; fi
   suite_seeds=(2024 10002024 20002024)
-  printf '[SUITE] tag=%s | diagnostics=%s once | benchmarks=%s x 3 seeds | FID tools=3 x 3 seeds\n' \
-    "$run_tag" "${#diagnostic_ids[@]}" "${#benchmark_ids[@]}"
+  printf '[SUITE] tag=%s | gpu_mode=%s | diagnostics=%s once | benchmarks=%s x 3 seeds | FID tools=3 x 3 seeds\n' \
+    "$run_tag" "$gpu_mode" "${#diagnostic_ids[@]}" "${#benchmark_ids[@]}"
   if [[ "$dry_run" == true ]]; then
     printf '[PLAN] diagnostic %s\n' "${diagnostic_ids[@]}"
     for planned_seed in "${suite_seeds[@]}"; do
@@ -744,7 +745,7 @@ if [[ "$experiment" == sem_sd3_ffm || "$experiment" == ours_sd3_ffm ]]; then
   fi
 fi
 
-echo "[RUN] $experiment | kind=$profile_kind | tag=$run_tag | output=$run_dir"
+echo "[RUN] $experiment | kind=$profile_kind | tag=$run_tag | requested_gpu_mode=$gpu_mode | env_gpu_mode=$COLAB_GPU_MODE | output=$run_dir"
 if [[ "$resume_run" == true ]]; then
   if [[ "$(<"$run_dir/base_seed.txt")" != "$base_seed" ]] ||
      ! cmp -s <(printf '%s\n' "$input_report") "$run_dir/input_verification.json" ||

@@ -33,7 +33,7 @@ def display(*values):
             print(value)
 
 # Notebook: Ours/semantic_anchor_experiments/semantic_anchor_sd15_lcm_anchor_runtime_smoke8_colab.ipynb
-# Notebook SHA256: ab81d9470a2c78cb1c8e004a8149d79549d59b2e4b6bad8d21aa0e26c5ec9932
+# Notebook SHA256: 72daf0dd12fdcfeb8416c50a7dec90711ca73dee5e0125ee6effdb09628d9da1
 
 # --- Source notebook cell 3 ---
 # 2. Cấu hình ablation runtime. Mặc định smoke8 để kiểm tra ba nhánh cùng seed.
@@ -294,10 +294,10 @@ print('[OK] Helper functions đã sẵn sàng.')
 
 def _scatter_anchor_markers(ax, measurement):
     """Draw candidate points from one heatmap in image pixel coordinates."""
-    anchor_x, anchor_y = measurement['anchor_xy']
-    topk_x, topk_y = measurement['topk_centroid_xy']
-    projected_x, projected_y = measurement['topk_projected_anchor_xy']
-    bbox_x, bbox_y = measurement['bbox_center_xy']
+    anchor_x, anchor_y = measurement['anchor_x'], measurement['anchor_y']
+    topk_x, topk_y = measurement['topk_center_x'], measurement['topk_center_y']
+    projected_x, projected_y = measurement['topk_anchor_x'], measurement['topk_anchor_y']
+    bbox_x, bbox_y = measurement['bbox_center_x'], measurement['bbox_center_y']
     ax.scatter(anchor_x, anchor_y, marker='x', c='#75ff40', s=120, linewidths=3, label='Masked argmax')
     ax.scatter(topk_x, topk_y, marker='o', facecolors='white', edgecolors='black', s=76, linewidths=1.5, label='Top-k centroid')
     ax.scatter(projected_x, projected_y, marker='D', c='#f9ac25', s=70, label='Top-k projected anchor')
@@ -324,7 +324,7 @@ def save_per_layer_contact_sheet(
     axes = np.atleast_1d(axes).ravel()
 
     axes[0].imshow(original); axes[0].set_title('Ảnh COCO gốc')
-    axes[1].imshow(mask, cmap='gray', vmin=0, vmax=1); axes[1].set_title('Object mask')
+    axes[1].imshow(mask.squeeze().cpu().numpy(), cmap='gray', vmin=0, vmax=1); axes[1].set_title('Object mask')
     axes[2].imshow(aggregate_heatmap, cmap='magma', vmin=0, vmax=1)
     _scatter_anchor_markers(axes[2], aggregate_measurement)
     axes[2].set_title('Trung bình toàn bộ attn2')
