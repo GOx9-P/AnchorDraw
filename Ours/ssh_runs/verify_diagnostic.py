@@ -10,6 +10,7 @@ from pathlib import Path
 RUNNER_FILES = {
     "console.log", "verification.log", "input_verification.json", "repo_commit.txt",
     "repo_status.txt", "code_sha256.txt", "profile_sha256.txt", "pip_freeze.txt", "nvidia_smi.txt",
+    "gpu_mode.txt", "base_seed.txt",
 }
 
 

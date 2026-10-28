@@ -68,7 +68,7 @@ while (($#)); do
   esac
 done
 
-if [[ -z "$output_root" ]]; then output_root="${ANCHORDRAW_OUTPUT_ROOT:-${HOME:?HOME is required}/anchordraw_runs}"; fi
+if [[ -z "$output_root" ]]; then output_root="${ANCHORDRAW_OUTPUT_ROOT:-$REPO_ROOT/anchordraw_runs}"; fi
 if [[ -z "$coco_root" ]]; then coco_root="${ANCHORDRAW_COCO_ROOT:-$output_root/_coco2017}"; fi
 
 if [[ "$prepare_coco_only" == true && -n "$experiment" ]]; then
@@ -376,8 +376,15 @@ if [[ "$profile_kind" == "suite" ]]; then
       echo "Missing metric profile: $id" >&2; exit 2
     fi
   done
-  if [[ -z "$run_tag" ]]; then run_tag="$(date -u +%Y%m%dT%H%M%SZ)"; fi
   suite_seeds=(2024 10002024 20002024)
+  # A no-argument invocation picks up the latest compatible suite, including
+  # suites made before checkpointing. A new --tag remains an explicit reset.
+  output_root="$("$python_bin" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$output_root")"
+  coco_root="$("$python_bin" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$coco_root")"
+  if [[ -z "$run_tag" ]]; then
+    run_tag="$("$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" select "$output_root" "$gpu_mode" "$coco_root")"
+    if [[ -z "$run_tag" ]]; then run_tag="$(date -u +%Y%m%dT%H%M%SZ)"; fi
+  fi
   printf '[SUITE] tag=%s | gpu_mode=%s | diagnostics=%s once | benchmarks=%s x 3 seeds | FID tools=3 x 3 seeds\n' \
     "$run_tag" "$gpu_mode" "${#diagnostic_ids[@]}" "${#benchmark_ids[@]}"
   if [[ "$dry_run" == true ]]; then
@@ -404,17 +411,60 @@ if [[ "$profile_kind" == "suite" ]]; then
   # independent experiments can still run.
   mkdir -p -- "$output_root"
   output_root="$(cd -- "$output_root" && pwd -P)"
-  coco_root="$("$python_bin" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$coco_root")"
-  suite_root="$output_root/$run_tag"
-  if [[ -e "$suite_root" ]]; then
-    echo "Suite output already exists; choose a new --tag: $suite_root" >&2; exit 2
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "Suite checkpointing requires flock on the SSH host" >&2; exit 2
   fi
-  mkdir -- "$suite_root"
+  exec 9>"$output_root/.anchordraw_suite.lock"
+  if ! flock -n 9; then
+    echo "Another AnchorDraw suite is using this output root: $output_root" >&2; exit 2
+  fi
+  suite_root="$output_root/$run_tag"
+  if [[ -e "$suite_root" && ! -d "$suite_root" ]]; then
+    echo "Suite output is not a directory: $suite_root" >&2; exit 2
+  fi
+  if [[ -d "$suite_root" ]]; then
+    echo "[SUITE] Continuing existing tag: $run_tag"
+  else
+    mkdir -- "$suite_root"
+  fi
+  "$python_bin" - "$suite_root/suite_metadata.json" "$gpu_mode" "$coco_root" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+metadata = {"gpu_mode": sys.argv[2], "coco_root": sys.argv[3]}
+if path.is_file():
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    if saved != metadata:
+        raise SystemExit(f"Suite tag has different GPU/COCO configuration: {path}")
+else:
+    path.write_text(json.dumps(metadata, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+PY
   echo "[SUITE] output=$suite_root | COCO=$coco_root"
   if ! check_sd3_hf_access "$SCRIPT_DIR/profiles/sem_sd3_ffm.py"; then
     echo "[SUITE WARN] SD3 access is unavailable now; non-SD3 profiles will still run" >&2
   fi
   prepare_coco
+  "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" context \
+    "$suite_root/.checkpoint_context.json" "$coco_root" "$gpu_mode"
+  if [[ -f "$suite_root/suite_complete.txt" ]]; then
+    mkdir -p -- "$suite_root/_superseded/suite_markers"
+    mv -- "$suite_root/suite_complete.txt" \
+      "$suite_root/_superseded/suite_markers/suite_complete_$(date -u +%Y%m%dT%H%M%S)_$$.txt"
+  fi
+
+  profile_ran=false
+  force_profile=false
+  archive_attempt() {
+    local id="$1" seed_label="$2" run_dir="$3" log_file="$4"
+    local archive="$suite_root/_superseded/$seed_label/$id/$(date -u +%Y%m%dT%H%M%S)_${BASHPID}_$RANDOM"
+    mkdir -p -- "$archive"
+    if [[ -e "$run_dir" ]]; then mv -- "$run_dir" "$archive/run"; fi
+    if [[ -e "$log_file" ]]; then mv -- "$log_file" "$archive/runner.log"; fi
+    if [[ -e "$log_file.ok" ]]; then mv -- "$log_file.ok" "$archive/runner.log.ok"; fi
+    echo "[ARCHIVE] $seed_label/$id -> $archive"
+  }
 
   run_suite_profile() {
     local id="$1"
@@ -422,13 +472,52 @@ if [[ "$profile_kind" == "suite" ]]; then
     local seed_label="${active_base_seed:-diagnostic}"
     local log_dir="$suite_root/runner_logs/$seed_label"
     local log_file="$log_dir/$id.log"
+    local profile_kind="full1073"
+    local run_dir="$suite_root/seed_$seed_label/$id"
+    if [[ "$seed_label" == "diagnostic" ]]; then
+      profile_kind="diagnostic"
+      run_dir="$suite_root/$id"
+    elif [[ "$id" == cleanfid || "$id" == pytorch_fid || "$id" == ttur_fid ]]; then
+      profile_kind="metric"
+    fi
+    profile_ran=false
     mkdir -p -- "$log_dir"
-    echo "[SUITE] Starting $seed_label/$id"
     local -a seed_args=()
     if [[ -n "${active_base_seed:-}" ]]; then seed_args=(--base-seed "$active_base_seed"); fi
     local -a command=(bash "$SCRIPT_DIR/run_experiment.sh" --experiment "$id" \
       --coco-root "$coco_root" --output-root "$output_root" \
       --tag "$run_tag" --python "$python_bin" --gpu-mode "$gpu_mode" "${seed_args[@]}" "$@")
+    if [[ ( -f "$log_file.ok" || -s "$run_dir/verification.log" ) && "$force_profile" != true ]]; then
+      if "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" check \
+          "$id" "$profile_kind" "$run_dir" "$seed_label" "$suite_root/.checkpoint_context.json"; then
+        touch -- "$log_file.ok"
+        echo "[SKIP VERIFIED] $seed_label/$id | output=$run_dir"
+        return 0
+      fi
+      echo "[STALE] $seed_label/$id: saved result no longer passes the checkpoint"
+    fi
+    if [[ -d "$run_dir" && ! -f "$log_file.ok" && "$id" == *_sd3_ffm && "$force_profile" != true ]] &&
+       "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" resume \
+         "$run_dir" "$seed_label" "$suite_root/.checkpoint_context.json" >/dev/null 2>&1; then
+      echo "[RESUME] $seed_label/$id: continuing incomplete SD3 images"
+      profile_ran=true
+      if "${command[@]}" --resume >>"$log_file" 2>&1; then
+        touch -- "$log_file.ok"
+        echo "[PASS] $seed_label/$id after resume | log=$log_file"
+        return 0
+      else
+        local resume_status=$?
+        printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" "$resume_status" "$log_file" >> "$suite_root/suite_failures.tsv"
+        echo "[FAIL] $seed_label/$id (resume exit=$resume_status) | log=$log_file" >&2
+        tail -n 3 -- "$log_file" >&2 || true
+        return 1
+      fi
+    fi
+    if [[ -e "$run_dir" || -e "$log_file" || -e "$log_file.ok" ]]; then
+      archive_attempt "$id" "$seed_label" "$run_dir" "$log_file"
+    fi
+    profile_ran=true
+    echo "[SUITE] Starting $seed_label/$id"
     if "${command[@]}" >"$log_file" 2>&1; then
       touch -- "$log_file.ok"
       echo "[PASS] $seed_label/$id | log=$log_file"
@@ -464,24 +553,39 @@ if [[ "$profile_kind" == "suite" ]]; then
   for active_base_seed in "${suite_seeds[@]}"; do
     seed_root="$suite_root/seed_$active_base_seed"
     seed_benchmarks_ok=true
+    seed_benchmarks_reran=false
+    sem_lcm_reran=false
+    pytorch_reran=false
+    if [[ -f "$seed_root/seed_complete.txt" ]]; then
+      mkdir -p -- "$suite_root/_superseded/$active_base_seed/seed_markers"
+      mv -- "$seed_root/seed_complete.txt" \
+        "$suite_root/_superseded/$active_base_seed/seed_markers/seed_complete_$(date -u +%Y%m%dT%H%M%S)_$$.txt"
+    fi
     for id in "${benchmark_ids[@]}"; do
       if ! run_suite_profile "$id"; then
         suite_failed=true
         if [[ "$id" != *_sd3_ffm ]]; then seed_benchmarks_ok=false; fi
       fi
+      if [[ "$profile_ran" == true && "$id" != *_sd3_ffm ]]; then seed_benchmarks_reran=true; fi
+      if [[ "$profile_ran" == true && "$id" == sem_sd15_lcm ]]; then sem_lcm_reran=true; fi
     done
 
   # These two notebooks specifically evaluate the verified SemanticDraw SD1.5 LCM export.
   export_dir="$seed_root/sem_sd15_lcm/metric_export"
   if [[ -f "$export_dir/metric_generated_manifest.jsonl" ]]; then
+    force_profile="$sem_lcm_reran"
     if ! run_suite_profile pytorch_fid --export-dir "$export_dir"; then suite_failed=true; fi
+    pytorch_reran="$profile_ran"
+    force_profile=false
   else
     echo "[SKIP] seed_$active_base_seed/pytorch_fid: SemanticDraw SD1.5 LCM export missing" >&2
     suite_failed=true
   fi
   reference_dir="$seed_root/pytorch_fid/pytorch_fid_eval/sem_sd15_lcm/reference_images/sem_sd15_lcm"
   if [[ -f "$suite_root/runner_logs/$active_base_seed/pytorch_fid.log.ok" && -d "$reference_dir" ]]; then
+    force_profile="${pytorch_reran:-false}"
     if ! run_suite_profile ttur_fid --export-dir "$export_dir" --reference-dir "$reference_dir"; then suite_failed=true; fi
+    force_profile=false
   else
     echo "[SKIP] seed_$active_base_seed/ttur_fid: PyTorch FID reference missing" >&2
     suite_failed=true
@@ -562,7 +666,24 @@ print("[CleanFID] Verified all 14 benchmark reports", flush=True)
 PY
   }
   if [[ "$seed_benchmarks_ok" == true ]]; then
-    if prepare_cleanfid_dataset >"$suite_root/runner_logs/$active_base_seed/cleanfid_prepare.log" 2>&1; then
+    cleanfid_reusable=false
+    cleanfid_run_dir="$seed_root/cleanfid"
+    cleanfid_ok="$suite_root/runner_logs/$active_base_seed/cleanfid.log.ok"
+    if [[ "$seed_benchmarks_reran" == false && -f "$cleanfid_ok" ]] &&
+       "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" check cleanfid metric \
+         "$cleanfid_run_dir" "$active_base_seed" "$suite_root/.checkpoint_context.json" &&
+       verify_cleanfid_reports >/dev/null 2>&1; then
+      cleanfid_reusable=true
+    fi
+    if [[ "$cleanfid_reusable" == false && -e "$dataset_root" ]]; then
+      dataset_archive="$suite_root/_superseded/$active_base_seed/_cleanfid_dataset/$(date -u +%Y%m%dT%H%M%S)_${BASHPID}_$RANDOM"
+      mkdir -p -- "$dataset_archive"
+      mv -- "$dataset_root" "$dataset_archive/dataset"
+      echo "[ARCHIVE] seed_$active_base_seed/_cleanfid_dataset -> $dataset_archive"
+    fi
+    if [[ "$cleanfid_reusable" == true ]] ||
+       prepare_cleanfid_dataset >"$suite_root/runner_logs/$active_base_seed/cleanfid_prepare.log" 2>&1; then
+      if [[ "$cleanfid_reusable" == false ]]; then force_profile=true; fi
       if run_suite_profile cleanfid --dataset-root "$dataset_root"; then
         if ! verify_cleanfid_reports >"$suite_root/runner_logs/$active_base_seed/cleanfid_verify.log" 2>&1; then
           echo "[FAIL] seed_$active_base_seed/cleanfid verification; see runner_logs" >&2
@@ -571,6 +692,7 @@ PY
       else
         suite_failed=true
       fi
+      force_profile=false
     else
       echo "[FAIL] seed_$active_base_seed/cleanfid preparation; see runner_logs" >&2
       suite_failed=true
@@ -750,6 +872,7 @@ if [[ "$resume_run" == true ]]; then
   fi
 else
   printf '%s\n' "$base_seed" > "$run_dir/base_seed.txt"
+  printf '%s\n' "$gpu_mode" > "$run_dir/gpu_mode.txt"
   if [[ "$profile_kind" != "metric" ]]; then printf '%s\n' "$input_report" > "$run_dir/input_verification.json"; fi
   git -C "$REPO_ROOT" rev-parse HEAD > "$run_dir/repo_commit.txt" 2>/dev/null || true
   git -C "$REPO_ROOT" status --short > "$run_dir/repo_status.txt" 2>/dev/null || true

@@ -22,6 +22,7 @@ def test_complete_sd3_seed_aggregate_and_reject_wrong_seed(tmp_path: Path, monke
             config = {
                 "base_seed": seed, "run_profile": "full1073", "expected_samples": 1073,
                 "model_family": "sd3", "experiment_id": stem, "run_signature": signature,
+                    "gpu_mode": "a100_80gb", "num_workers": 2,
                 "view_profile": "native_full_v128" if method == "multidiffusion" else None,
                 "manifest_sha256": "a" * 64, "input_masks_sha256": "b" * 64,
                 "coco_annotations_sha256": "c" * 64, "metrics_source_sha256": "d" * 64,
@@ -92,7 +93,12 @@ def test_complete_sd3_seed_aggregate_and_reject_wrong_seed(tmp_path: Path, monke
             destination = suite_root / f"seed_{seed}" / profile / "anchordraw_metric_exports"
             destination.mkdir(parents=True)
             run_dir = destination.parent
-            (run_dir / "code_sha256.txt").write_text("same verified code\n", encoding="utf-8")
+            (run_dir / "code_sha256.txt").write_text(
+                f"{'a' * 64}  /repo/Baseline/semantic-draw-main/src/model/pipeline.py\n"
+                f"{'b' * 64}  /repo/Ours/src/metrics/evaluate.py\n", encoding="utf-8")
+            (run_dir / "profile_sha256.txt").write_text(
+                f"{'c' * 64}  /repo/Ours/ssh_runs/profiles/{profile}.py\n", encoding="utf-8")
+            (run_dir / "gpu_mode.txt").write_text("a100_80gb\n", encoding="utf-8")
             (run_dir / "pip_freeze.txt").write_text("same verified environment\n", encoding="utf-8")
             (run_dir / "input_verification.json").write_text(json.dumps({
                 "family": "sd3", "records": 1073, "manifest_sha256": "a" * 64,
@@ -105,14 +111,18 @@ def test_complete_sd3_seed_aggregate_and_reject_wrong_seed(tmp_path: Path, monke
                 shutil.copy2(sidecar, destination / sidecar.name)
     assert aggregate({method: suite_root for method in METHODS})["methods"]["semanticdraw"]["fid"]["mean"] == 12.0
     changed_code = suite_root / f"seed_{SEEDS[0]}" / "ours_sd3_ffm" / "code_sha256.txt"
-    changed_code.write_text("different code\n", encoding="utf-8")
+    changed_code.write_text(
+        f"{'d' * 64}  /repo/Baseline/semantic-draw-main/src/model/pipeline.py\n"
+        f"{'b' * 64}  /repo/Ours/src/metrics/evaluate.py\n", encoding="utf-8")
     try:
         aggregate({method: suite_root for method in METHODS})
     except RuntimeError as error:
         assert "different code" in str(error)
     else:
         raise AssertionError("SD3 suite accepted different source snapshots")
-    changed_code.write_text("same verified code\n", encoding="utf-8")
+    changed_code.write_text(
+        f"{'a' * 64}  /repo/Baseline/semantic-draw-main/src/model/pipeline.py\n"
+        f"{'b' * 64}  /repo/Ours/src/metrics/evaluate.py\n", encoding="utf-8")
     output = tmp_path / "summary"
     monkeypatch.setattr(sys, "argv", ["aggregate_sd3_seeds.py", "--semanticdraw", str(roots["semanticdraw"]),
                                       "--anchordraw", str(roots["anchordraw"]),

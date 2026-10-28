@@ -8,6 +8,7 @@ import json
 import math
 import statistics
 from pathlib import Path
+from scientific_snapshot import requested_gpu_mode, shared_source_snapshot
 
 
 BENCHMARKS = (
@@ -76,9 +77,9 @@ def aggregate(suite_root: Path, seeds: list[int]) -> dict:
 
     all_reports: dict[str, dict[int, dict]] = {profile: {} for profile in BENCHMARKS}
     reference_inputs: dict[str, dict] = {}
-    reference_environment: dict[str, tuple[bytes, bytes]] = {}
+    reference_environment: dict[str, tuple[tuple[tuple[str, str], ...], bytes, bytes, str]] = {}
     family_inputs: dict[str, dict] = {}
-    suite_environment: tuple[bytes, bytes] | None = None
+    suite_environment: tuple[tuple[tuple[str, str], ...], bytes, str] | None = None
     cleanfid_by_seed: dict[int, dict[str, float]] = {}
     auxiliary_by_seed: dict[str, dict[int, float]] = {"pytorch_fid": {}, "ttur_fid": {}}
     ttur_source_hash: str | None = None
@@ -109,18 +110,20 @@ def aggregate(suite_root: Path, seeds: list[int]) -> dict:
             if family in family_inputs and hashes != family_inputs[family]:
                 raise RuntimeError(f"Input data changed between {family} profiles: {profile}")
             family_inputs[family] = hashes
-            environment = (
-                (run_dir / "code_sha256.txt").read_bytes(),
-                (run_dir / "pip_freeze.txt").read_bytes(),
-            )
-            if not all(environment):
+            shared_source = shared_source_snapshot(run_dir / "code_sha256.txt")
+            dependencies = (run_dir / "pip_freeze.txt").read_bytes()
+            profile_source = (run_dir / "profile_sha256.txt").read_bytes()
+            gpu_mode = requested_gpu_mode(run_dir)
+            if not dependencies or not profile_source or not gpu_mode:
                 raise RuntimeError(f"Missing code or environment snapshot in {run_dir}")
+            environment = (shared_source, dependencies, profile_source, gpu_mode)
             if profile in reference_environment and environment != reference_environment[profile]:
                 raise RuntimeError(f"Code or Python dependencies changed across seeds for {profile}")
             reference_environment[profile] = environment
-            if suite_environment is not None and environment != suite_environment:
-                raise RuntimeError(f"Code or Python dependencies changed between suite profiles: {profile}")
-            suite_environment = environment
+            shared_environment = (shared_source, dependencies, gpu_mode)
+            if suite_environment is not None and shared_environment != suite_environment:
+                raise RuntimeError(f"Shared source or Python dependencies changed between suite profiles: {profile}")
+            suite_environment = shared_environment
             candidates = []
             for path in run_dir.rglob("*.json"):
                 try:

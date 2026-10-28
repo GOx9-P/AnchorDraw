@@ -9,6 +9,11 @@ from aggregate_seeds import BENCHMARKS, aggregate, write_outputs
 
 
 SEEDS = [2024, 10002024, 20002024]
+SHARED_SNAPSHOT = (
+    f"{'a' * 64}  /repo/Baseline/semantic-draw-main/src/model/pipeline.py\n"
+    f"{'b' * 64}  /repo/Ours/src/metrics/evaluate.py\n"
+    f"{'c' * 64}  /repo/Ours/ssh_runs/unrelated_diagnostic.py\n"
+).encode()
 
 
 def make_suite(root):
@@ -29,7 +34,9 @@ def make_suite(root):
                 "manifest_sha256": "a" * 64, "instances_sha256": "b" * 64,
                 "captions_sha256": "c" * 64, "manifest_images_sha256": "d" * 64,
             }), encoding="utf-8")
-            (run / "code_sha256.txt").write_bytes(b"same code\n")
+            (run / "code_sha256.txt").write_bytes(SHARED_SNAPSHOT)
+            (run / "profile_sha256.txt").write_text(f"{'d' * 64}  /repo/Ours/ssh_runs/profiles/{profile}.py\n", encoding="utf-8")
+            (run / "gpu_mode.txt").write_text("a100_80gb\n", encoding="utf-8")
             (run / "pip_freeze.txt").write_bytes(b"same environment\n")
             (run / "generation_summary.json").write_text(json.dumps([
                 {"index": index, "seed": seed + index} for index in range(1073)
@@ -99,11 +106,11 @@ def test_three_seed_report_and_incomplete_seed_rejection(tmp_path):
 def test_rejects_drift_between_different_profiles_in_same_suite(tmp_path):
     make_suite(tmp_path)
     md = tmp_path / "seed_2024" / "md_sd15_lcm"
-    (md / "code_sha256.txt").write_bytes(b"changed code\n")
+    (md / "code_sha256.txt").write_bytes(SHARED_SNAPSHOT.replace(b"b" * 64, b"e" * 64))
     with pytest.raises(RuntimeError, match="between suite profiles"):
         aggregate(tmp_path, SEEDS)
 
-    (md / "code_sha256.txt").write_bytes(b"same code\n")
+    (md / "code_sha256.txt").write_bytes(SHARED_SNAPSHOT)
     report_path = md / "input_verification.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     report["manifest_images_sha256"] = "e" * 64

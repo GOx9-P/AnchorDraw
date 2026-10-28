@@ -11,6 +11,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from PIL import Image
+from scientific_snapshot import requested_gpu_mode, same_shared_source
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,7 +82,7 @@ def verify_main_pair_protocol(profile: str, counterpart: str) -> None:
                 raise RuntimeError(f"Matched SDXL profiles differ in {baseline_key}: {profile} vs {counterpart}")
 
 
-def verify_run(profile: str, run_dir: Path) -> dict:
+def verify_run(profile: str, run_dir: Path, *, check_pair: bool = True) -> dict:
     if profile in {"sem_sd3_ffm", "ours_sd3_ffm", "md_sd3_ffm"}:
         return verify_sd3_run(profile, run_dir)
     seed_file = run_dir / "base_seed.txt"
@@ -222,7 +223,7 @@ def verify_run(profile: str, run_dir: Path) -> dict:
                 or snapshot.read_bytes() != after.read_bytes()):
             raise RuntimeError(f"Missing or changed code/Python environment snapshot: {snapshot}")
     counterpart = PAIRS.get(profile)
-    if counterpart:
+    if counterpart and check_pair:
         counterpart_dir = run_dir.parent / counterpart
         counterpart_input = counterpart_dir / "input_verification.json"
         counterpart_complete = counterpart_dir / "benchmark_complete.txt"
@@ -241,12 +242,18 @@ def verify_run(profile: str, run_dir: Path) -> dict:
             for key in ("manifest_sha256", "instances_sha256", "captions_sha256", "manifest_images_sha256"):
                 if not input_report.get(key) or input_report.get(key) != paired.get(key):
                     raise RuntimeError(f"Matched runs use different {key}: {profile} vs {counterpart}")
-            for filename in ("code_sha256.txt", "pip_freeze.txt"):
-                own_snapshot = run_dir / filename
-                paired_snapshot = counterpart_dir / filename
-                if (not own_snapshot.is_file() or not paired_snapshot.is_file()
-                        or not own_snapshot.read_bytes() or own_snapshot.read_bytes() != paired_snapshot.read_bytes()):
-                    raise RuntimeError(f"Matched runs use different or missing {filename}: {profile} vs {counterpart}")
+            if not same_shared_source(run_dir / "code_sha256.txt", counterpart_dir / "code_sha256.txt"):
+                raise RuntimeError(f"Matched runs use different shared generation/metric source: {profile} vs {counterpart}")
+            own_gpu = requested_gpu_mode(run_dir)
+            paired_gpu = requested_gpu_mode(counterpart_dir)
+            if not own_gpu or own_gpu != paired_gpu:
+                raise RuntimeError(f"Matched runs use different or unrecorded GPU presets: {profile} vs {counterpart}")
+            own_environment = run_dir / "pip_freeze.txt"
+            paired_environment = counterpart_dir / "pip_freeze.txt"
+            if (not own_environment.is_file() or not paired_environment.is_file()
+                    or not own_environment.read_bytes()
+                    or own_environment.read_bytes() != paired_environment.read_bytes()):
+                raise RuntimeError(f"Matched runs use different Python dependencies: {profile} vs {counterpart}")
     evaluated = report.get("evaluated", [])
     if len(evaluated) != len(manifest) or [str(row.get("sample_id")) for row in evaluated] != [str(row["sample_id"]) for row in manifest]:
         raise RuntimeError(f"Metric report sample order differs from manifest: {report_path}")

@@ -14,6 +14,7 @@ import math
 import statistics
 from pathlib import Path
 from zipfile import ZipFile
+from scientific_snapshot import requested_gpu_mode, shared_source_snapshot
 
 
 SEEDS = (2024, 10002024, 20002024)
@@ -145,17 +146,23 @@ def aggregate(roots: dict[str, Path]) -> dict:
         if not all(path.is_dir() for path in suite_dirs):
             raise RuntimeError("SD3 SSH suite layout is missing a method or seed")
         code_snapshots = set()
+        profile_snapshots: dict[str, set[bytes]] = {profile: set() for profile in profiles.values()}
+        gpu_modes = set()
         environments = set()
         inputs = set()
         for run_dir in suite_dirs:
-            code_snapshots.add((run_dir / "code_sha256.txt").read_bytes())
+            code_snapshots.add(shared_source_snapshot(run_dir / "code_sha256.txt"))
+            profile_snapshots[run_dir.name].add((run_dir / "profile_sha256.txt").read_bytes())
+            gpu_modes.add(requested_gpu_mode(run_dir))
             environments.add((run_dir / "pip_freeze.txt").read_bytes())
             report = json.loads((run_dir / "input_verification.json").read_text(encoding="utf-8"))
             if report.get("family") != "sd3" or report.get("records") != 1073:
                 raise RuntimeError(f"Invalid SD3 input verification: {run_dir}")
             inputs.add(tuple(report.get(key) for key in (
                 "manifest_sha256", "instances_sha256", "captions_sha256", "manifest_images_sha256", "coco_root")))
-        if len(code_snapshots) != 1 or len(environments) != 1 or len(inputs) != 1:
+        if (len(code_snapshots) != 1 or len(environments) != 1 or len(inputs) != 1
+                or len(gpu_modes) != 1 or None in gpu_modes
+                or any(len(values) != 1 or not next(iter(values)) for values in profile_snapshots.values())):
             raise RuntimeError("SD3 methods or seeds used different code, Python environment or COCO inputs")
     configs: dict[str, dict[int, dict]] = {}
     scores: dict[str, dict[int, dict]] = {}
@@ -180,6 +187,7 @@ def aggregate(roots: dict[str, Path]) -> dict:
                     "manifest_sha256", "input_masks_sha256", "coco_annotations_sha256",
                     "metrics_source_sha256", "data_source_sha256", "pipeline_sha256",
                     "dependency_versions", "bootstrap_steps", "t_index_list", "batch_size",
+                    "gpu_mode", "num_workers",
                     "guidance_scale", "mask_std", "mask_strength", "mask_type",
                     "preprocess_mask_cover_alpha", "num_inference_steps", "negative_prompt",
                     "dtype", "patch_safe_white_bootstrap_latent", "white_bootstrap_seed",

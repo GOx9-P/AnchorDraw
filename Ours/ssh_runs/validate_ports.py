@@ -99,6 +99,38 @@ def literal_constants(path):
     return values
 
 
+def check_terminal_cloud_imports(tree: ast.AST, path) -> None:
+    """Reject cloud APIs that the server could reach without a safe guard."""
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    disabled_flags = {
+        target.id for node in getattr(tree, "body", ())
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and node.value.value is False
+        for target in node.targets if isinstance(target, ast.Name)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"get_ipython", "input"}:
+            raise RuntimeError(f"Interactive notebook call remains in terminal profile: {path}:{node.lineno}")
+        if not isinstance(node, ast.ImportFrom) or node.module not in {"google.colab", "kaggle_secrets"}:
+            continue
+        child = node
+        protected = False
+        while child in parents:
+            ancestor = parents[child]
+            if isinstance(ancestor, ast.Try) and child in ancestor.body:
+                if any(isinstance(handler.type, ast.Name) and handler.type.id in {
+                    "Exception", "ImportError", "ModuleNotFoundError"
+                } for handler in ancestor.handlers):
+                    protected = True
+                    break
+            if (isinstance(ancestor, ast.If) and child in ancestor.body
+                    and isinstance(ancestor.test, ast.Name) and ancestor.test.id in disabled_flags):
+                protected = True
+                break
+            child = ancestor
+        if not protected:
+            raise RuntimeError(f"Reachable cloud-only import in terminal profile: {path}:{node.lineno}")
+
+
 def check_one(directory, name, notebook, cells, *, full1073):
         path = directory / f"{name}.py"
         text = path.read_text(encoding="utf-8")
@@ -107,6 +139,7 @@ def check_one(directory, name, notebook, cells, *, full1073):
         if ('"-m", "pip", "install"' in text or "'-m', 'pip', 'install'" in text):
             raise RuntimeError(f"Profile installs packages during a run: {path}")
         tree = ast.parse(text, filename=str(path))
+        check_terminal_cloud_imports(tree, path)
         display_shims = [node for node in tree.body
                          if isinstance(node, ast.FunctionDef) and node.name == "display"]
         if len(display_shims) != 1 or display_shims[0].args.vararg is None:
