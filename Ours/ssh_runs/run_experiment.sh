@@ -466,6 +466,13 @@ PY
     echo "[ARCHIVE] $seed_label/$id -> $archive"
   }
 
+  claim_profile_attempt() {
+    local id="$1" seed_label="$2" kind="$3"
+    if [[ "$kind" != "full1073" ]]; then return 0; fi
+    "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" claim \
+      "$id" "$seed_label" "$suite_root/.checkpoint_context.json"
+  }
+
   run_suite_profile() {
     local id="$1"
     shift
@@ -499,6 +506,14 @@ PY
     if [[ -d "$run_dir" && ! -f "$log_file.ok" && "$id" == *_sd3_ffm && "$force_profile" != true ]] &&
        "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" resume \
          "$run_dir" "$seed_label" "$suite_root/.checkpoint_context.json" >/dev/null 2>&1; then
+      if claim_profile_attempt "$id" "$seed_label" "$profile_kind"; then
+        :
+      else
+        local claim_status=$?
+        printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" "$claim_status" "$log_file" >> "$suite_root/suite_failures.tsv"
+        echo "[STOP] $seed_label/$id: benchmark attempt budget unavailable; existing images preserved" >&2
+        return 1
+      fi
       echo "[RESUME] $seed_label/$id: continuing incomplete SD3 images"
       profile_ran=true
       if "${command[@]}" --resume >>"$log_file" 2>&1; then
@@ -512,6 +527,14 @@ PY
         tail -n 3 -- "$log_file" >&2 || true
         return 1
       fi
+    fi
+    if claim_profile_attempt "$id" "$seed_label" "$profile_kind"; then
+      :
+    else
+      local claim_status=$?
+      printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" "$claim_status" "$log_file" >> "$suite_root/suite_failures.tsv"
+      echo "[STOP] $seed_label/$id: benchmark attempt budget unavailable; existing output preserved" >&2
+      return 1
     fi
     if [[ -e "$run_dir" || -e "$log_file" || -e "$log_file.ok" ]]; then
       archive_attempt "$id" "$seed_label" "$run_dir" "$log_file"
@@ -528,13 +551,17 @@ PY
         local image_failure_log=""
         image_failure_log="$(find "$suite_root/seed_$active_base_seed/$id/anchordraw_runs" -name failed_images.jsonl -type f -print -quit 2>/dev/null || true)"
         if [[ -n "$image_failure_log" ]]; then
-          echo "[RETRY] $seed_label/$id: resuming only missing SD3 indices"
-          if "${command[@]}" --resume >>"$log_file" 2>&1; then
-            touch -- "$log_file.ok"
-            echo "[PASS] $seed_label/$id after resume | log=$log_file"
-            return 0
+          if claim_profile_attempt "$id" "$seed_label" "$profile_kind"; then
+            echo "[RETRY] $seed_label/$id: resuming only missing SD3 indices"
+            if "${command[@]}" --resume >>"$log_file" 2>&1; then
+              touch -- "$log_file.ok"
+              echo "[PASS] $seed_label/$id after resume | log=$log_file"
+              return 0
+            else
+              status=$?
+            fi
           else
-            status=$?
+            echo "[STOP] $seed_label/$id: no SD3 resume attempt remains; existing images preserved" >&2
           fi
         fi
       fi

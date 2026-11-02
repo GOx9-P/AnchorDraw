@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from scientific_snapshot import shared_source_snapshot
-from suite_checkpoint import SSH_ROOT, check_completed, select_suite
+from suite_checkpoint import (AttemptLimitReached, SSH_ROOT, check_completed,
+                              claim_benchmark_attempt, select_suite)
 from verify_diagnostic import RUNNER_FILES, verify_diagnostic
 
 
@@ -34,6 +35,27 @@ def test_diagnostic_provenance_files_are_not_result_artifacts(tmp_path):
         (tmp_path / filename).write_text("metadata\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="no result artifact"):
         verify_diagnostic("diag_sem_sd15_smoke", tmp_path)
+
+
+def test_benchmark_attempt_limit_persists_and_resets_for_changed_inputs(tmp_path):
+    context = tmp_path / ".checkpoint_context.json"
+    payload = {
+        "gpu_mode": "a100_80gb", "coco_root": str(tmp_path / "coco"),
+        "shared_source": [["Ours/src/example.py", "a" * 64]],
+        "dependencies_sha256": "b" * 64,
+        "inputs": {"sd15": {"manifest_sha256": "c" * 64}},
+    }
+    context.write_text(json.dumps(payload), encoding="utf-8")
+    for expected in (1, 2, 3):
+        assert claim_benchmark_attempt("sem_sd15_lcm", "2024", context) == expected
+    with pytest.raises(AttemptLimitReached, match="3/3"):
+        claim_benchmark_attempt("sem_sd15_lcm", "2024", context)
+    ledger = json.loads((tmp_path / "benchmark_attempts.json").read_text(encoding="utf-8"))
+    assert ledger["2024/sem_sd15_lcm"]["count"] == 3
+    assert claim_benchmark_attempt("sem_sd15_lcm", "10002024", context) == 1
+    payload["inputs"]["sd15"]["manifest_sha256"] = "d" * 64
+    context.write_text(json.dumps(payload), encoding="utf-8")
+    assert claim_benchmark_attempt("sem_sd15_lcm", "2024", context) == 1
 
 
 def test_select_latest_matching_suite_and_legacy_run(tmp_path):

@@ -10,9 +10,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from scientific_snapshot import current_shared_source, requested_gpu_mode, shared_source_snapshot
@@ -21,6 +23,11 @@ from scientific_snapshot import current_shared_source, requested_gpu_mode, share
 SSH_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = SSH_ROOT.parents[1]
 INPUT_KEYS = ("manifest_sha256", "instances_sha256", "captions_sha256", "manifest_images_sha256")
+MAX_BENCHMARK_ATTEMPTS = 3
+
+
+class AttemptLimitReached(RuntimeError):
+    """A benchmark has already used its retry budget for this configuration."""
 
 
 def _sha256(data: bytes) -> str:
@@ -190,6 +197,53 @@ def check_resume(run_dir: Path, seed: str, context_path: Path) -> None:
         raise RuntimeError("Partial run predates a code change; strict SD3 resume cannot continue it")
 
 
+def claim_benchmark_attempt(profile: str, seed: str, context_path: Path) -> int:
+    """Persist a generation invocation before starting it, including SD3 resumes.
+
+    The suite holds an output-root flock. A code, environment or input change
+    starts a fresh budget; rerunning the same failing configuration does not.
+    """
+    if not re.fullmatch(r"[a-z0-9_]+", profile) or not re.fullmatch(r"[0-9]+", seed):
+        raise ValueError("Invalid benchmark identity")
+    source = SSH_ROOT / "profiles" / f"{profile}.py"
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    family = "sd3" if "sd3" in profile else ("sdxl" if "sdxl" in profile else "sd15")
+    fingerprint_payload = {
+        "profile_sha256": _sha256(source.read_bytes()),
+        "gpu_mode": context["gpu_mode"],
+        "coco_root": context["coco_root"],
+        "shared_source": context["shared_source"],
+        "dependencies_sha256": context["dependencies_sha256"],
+        "inputs": context["inputs"][family],
+    }
+    fingerprint = _sha256(json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8"))
+    ledger_path = context_path.parent / "benchmark_attempts.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.is_file() else {}
+    if not isinstance(ledger, dict):
+        raise RuntimeError(f"Malformed attempt ledger: {ledger_path}")
+    key = f"{seed}/{profile}"
+    saved = ledger.get(key, {})
+    if not isinstance(saved, dict):
+        raise RuntimeError(f"Malformed attempt entry for {key}")
+    count = int(saved.get("count", 0)) if saved.get("fingerprint") == fingerprint else 0
+    if count < 0:
+        raise RuntimeError(f"Negative attempt count for {key}")
+    if count >= MAX_BENCHMARK_ATTEMPTS:
+        raise AttemptLimitReached(
+            f"{key}: {count}/{MAX_BENCHMARK_ATTEMPTS} generation invocations used "
+            "for unchanged code, inputs and environment; keeping the incomplete run"
+        )
+    count += 1
+    ledger[key] = {"fingerprint": fingerprint, "count": count}
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=ledger_path.parent,
+                                     prefix=".benchmark_attempts_", suffix=".tmp", delete=False) as temporary:
+        json.dump(ledger, temporary, sort_keys=True, indent=2)
+        temporary.write("\n")
+        temporary_path = Path(temporary.name)
+    os.replace(temporary_path, ledger_path)
+    return count
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="action", required=True)
@@ -211,6 +265,10 @@ def main() -> None:
     resume.add_argument("run_dir", type=Path)
     resume.add_argument("seed")
     resume.add_argument("context_path", type=Path)
+    claim = sub.add_parser("claim")
+    claim.add_argument("profile")
+    claim.add_argument("seed")
+    claim.add_argument("context_path", type=Path)
     args = parser.parse_args()
     if args.action == "select":
         print(select_suite(args.output_root, args.gpu_mode, args.coco_root))
@@ -222,12 +280,22 @@ def main() -> None:
         except (OSError, ValueError, KeyError, RuntimeError) as exc:
             print(f"[CHECKPOINT] {args.profile}: {exc}", file=sys.stderr)
             raise SystemExit(1) from None
-    else:
+    elif args.action == "resume":
         try:
             check_resume(args.run_dir, args.seed, args.context_path)
         except (OSError, ValueError, KeyError, RuntimeError) as exc:
             print(f"[CHECKPOINT] {args.run_dir.name}: {exc}", file=sys.stderr)
             raise SystemExit(1) from None
+    else:
+        try:
+            count = claim_benchmark_attempt(args.profile, args.seed, args.context_path)
+        except AttemptLimitReached as exc:
+            print(f"[ATTEMPT LIMIT] {exc}", file=sys.stderr)
+            raise SystemExit(3) from None
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:
+            print(f"[CHECKPOINT] Cannot reserve benchmark attempt: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
+        print(f"[ATTEMPT] {args.seed}/{args.profile} {count}/{MAX_BENCHMARK_ATTEMPTS}")
 
 
 if __name__ == "__main__":
