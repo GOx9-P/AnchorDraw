@@ -33,7 +33,7 @@ def display(*values):
             print(value)
 
 # Notebook: Ours/semantic_anchor_experiments/semantic_anchor_sd15_lcm_anchor_runtime_smoke8_colab.ipynb
-# Notebook SHA256: 72daf0dd12fdcfeb8416c50a7dec90711ca73dee5e0125ee6effdb09628d9da1
+# Notebook SHA256: 46bfa2c2bf9da37cd8ebfd92458429b443a3413d690ae86cb36babe0dcb68f7e
 
 # --- Source notebook cell 3 ---
 # 2. Cấu hình ablation runtime. Mặc định smoke8 để kiểm tra ba nhánh cùng seed.
@@ -601,7 +601,15 @@ layer_metrics_df = pd.DataFrame(layer_metrics_rows)
 layer_stability_df = build_layer_stability_summary(layer_metrics_df)
 generation_df = pd.DataFrame(generation_rows)
 
-assert len(generation_rows) == EXPECTED_SAMPLES, (len(generation_rows), EXPECTED_SAMPLES)
+assert global_index == EXPECTED_SAMPLES, (global_index, EXPECTED_SAMPLES)
+expected_pairs = {(sample_index, mode) for sample_index in range(EXPECTED_SAMPLES) for mode in RUNTIME_MODES}
+observed_pairs = [(row['sample_index'], row['branch']) for row in generation_rows]
+assert len(observed_pairs) == len(expected_pairs), (len(observed_pairs), len(expected_pairs))
+assert len(set(observed_pairs)) == len(observed_pairs), 'Duplicate sample/branch generation row'
+assert set(observed_pairs) == expected_pairs, (expected_pairs - set(observed_pairs), set(observed_pairs) - expected_pairs)
+assert len(metrics_rows) == expected_metric_rows, (len(metrics_rows), expected_metric_rows)
+missing_images = [row['generated_path'] for row in generation_rows if not Path(row['generated_path']).is_file()]
+assert not missing_images, missing_images
 
 metrics_df.to_csv(METRICS_CSV, index=False, encoding='utf-8-sig')
 append_jsonl(METRICS_JSONL, metrics_rows)
