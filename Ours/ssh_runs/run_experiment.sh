@@ -18,7 +18,7 @@ usage() {
     '  bash Ours/ssh_runs/run_experiment.sh --experiment pytorch_fid --export-dir DIR [--coco-root DIR] [--output-root DIR] [--reference-dir DIR] [--tag NAME]' \
     '  bash Ours/ssh_runs/run_experiment.sh --experiment ttur_fid --export-dir DIR [--coco-root DIR] [--output-root DIR] [--reference-dir DIR] [--ttur-fid-file FILE] [--tag NAME]' \
     '' \
-    'No arguments: run 21 diagnostics once, then 17 benchmarks and 3 FID tools for each of 3 base seeds (2024, 10002024, 20002024).' \
+    'No arguments: run 21 diagnostics once, then 17 benchmarks and 3 FID tools for each of 10 base seeds (2024 + 10000000*n, n=0..9).' \
     'This is the only Bash entrypoint. Use --list for all experiment IDs.' \
     'Default GPU preset: a100_80gb (A100 80 GB).' \
     'SD3 requires accepted access to stabilityai/stable-diffusion-3-medium-diffusers and HF_TOKEN or a saved hf auth login on the SSH host.'
@@ -97,7 +97,7 @@ if [[ "$profile_kind" == "suite" && ( -n "$dataset_root" || -n "$export_dir" || 
   echo "Dataset/export/reference and run-profile options require --experiment" >&2; exit 2
 fi
 if [[ "$profile_kind" == "suite" && "$base_seed_explicit" == true ]]; then
-  echo "The complete suite uses its fixed three base seeds; --base-seed is for one experiment" >&2; exit 2
+  echo "The complete suite uses its fixed ten base seeds; --base-seed is for one experiment" >&2; exit 2
 fi
 if [[ ( "$profile_kind" == "diagnostic" || "$profile_kind" == "prepare_coco" ) && "$base_seed_explicit" == true ]]; then
   echo "--base-seed applies only to benchmark and FID profiles" >&2; exit 2
@@ -376,7 +376,7 @@ if [[ "$profile_kind" == "suite" ]]; then
       echo "Missing metric profile: $id" >&2; exit 2
     fi
   done
-  suite_seeds=(2024 10002024 20002024)
+  suite_seeds=(2024 10002024 20002024 30002024 40002024 50002024 60002024 70002024 80002024 90002024)
   # A no-argument invocation picks up the latest compatible suite, including
   # suites made before checkpointing. A new --tag remains an explicit reset.
   output_root="$("$python_bin" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$output_root")"
@@ -385,8 +385,8 @@ if [[ "$profile_kind" == "suite" ]]; then
     run_tag="$("$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" select "$output_root" "$gpu_mode" "$coco_root")"
     if [[ -z "$run_tag" ]]; then run_tag="$(date -u +%Y%m%dT%H%M%SZ)"; fi
   fi
-  printf '[SUITE] tag=%s | gpu_mode=%s | diagnostics=%s once | benchmarks=%s x 3 seeds | FID tools=3 x 3 seeds\n' \
-    "$run_tag" "$gpu_mode" "${#diagnostic_ids[@]}" "${#benchmark_ids[@]}"
+  printf '[SUITE] tag=%s | gpu_mode=%s | diagnostics=%s once | benchmarks=%s x %s seeds | FID tools=3 x %s seeds\n' \
+    "$run_tag" "$gpu_mode" "${#diagnostic_ids[@]}" "${#benchmark_ids[@]}" "${#suite_seeds[@]}" "${#suite_seeds[@]}"
   if [[ "$dry_run" == true ]]; then
     printf '[PLAN] diagnostic %s\n' "${diagnostic_ids[@]}"
     for planned_seed in "${suite_seeds[@]}"; do
@@ -394,7 +394,7 @@ if [[ "$profile_kind" == "suite" ]]; then
         printf '[PLAN] seed_%s %s\n' "$planned_seed" "$planned_id"
       done
     done
-    printf '[PLAN] aggregate 3 seed reports\n'
+    printf '[PLAN] aggregate %s seed reports\n' "${#suite_seeds[@]}"
     exit 0
   fi
 
@@ -527,6 +527,27 @@ PY
         tail -n 3 -- "$log_file" >&2 || true
         return 1
       fi
+    fi
+    if [[ "$id" == md_sd15_ddim && -d "$run_dir" && -s "$run_dir/verification.log" &&
+          ! -e "$run_dir/benchmark_complete.txt" && "$force_profile" != true ]] &&
+       "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" check-generation \
+         "$id" "$profile_kind" "$run_dir" "$seed_label" "$suite_root/.checkpoint_context.json" >>"$log_file" 2>&1; then
+      echo "[RECOVER] $seed_label/$id: finalizing verified images without regeneration"
+      profile_ran=true
+      if "$python_bin" -u "$SCRIPT_DIR/finalize_md_sd15_ddim_export.py" "$run_dir" >>"$log_file" 2>&1; then
+        printf '%s\n' "$id" > "$run_dir/benchmark_complete.txt"
+        if "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" check \
+             "$id" "$profile_kind" "$run_dir" "$seed_label" "$suite_root/.checkpoint_context.json" >>"$log_file" 2>&1; then
+          touch -- "$log_file.ok"
+          echo "[PASS RECOVERED] $seed_label/$id | log=$log_file"
+          return 0
+        fi
+        rm -f -- "$run_dir/benchmark_complete.txt"
+      fi
+      printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" 1 "$log_file" >> "$suite_root/suite_failures.tsv"
+      echo "[FAIL RECOVERY] $seed_label/$id: verified images preserved | log=$log_file" >&2
+      tail -n 5 -- "$log_file" >&2 || true
+      return 1
     fi
     if claim_profile_attempt "$id" "$seed_label" "$profile_kind"; then
       :
@@ -750,22 +771,22 @@ PY
   done
   if [[ "$non_sd3_ready" == true ]]; then
     if ! "$python_bin" -u "$SCRIPT_DIR/aggregate_seeds.py" "$suite_root" "${suite_seeds[@]}" >"$suite_root/aggregate_non_sd3.log" 2>&1; then
-      echo "[FAIL] Non-SD3 three-seed aggregation; see aggregate_non_sd3.log" >&2
+       echo "[FAIL] Non-SD3 ${#suite_seeds[@]}-seed aggregation; see aggregate_non_sd3.log" >&2
       suite_failed=true
     fi
   else
-    echo "[SKIP] Non-SD3 three-seed aggregation: incomplete seed set" >&2
+     echo "[SKIP] Non-SD3 ${#suite_seeds[@]}-seed aggregation: incomplete seed set" >&2
     suite_failed=true
   fi
   if [[ "$sd3_ready" == true ]]; then
     if ! "$python_bin" -u "$SCRIPT_DIR/aggregate_sd3_seeds.py" \
       --semanticdraw "$suite_root" --anchordraw "$suite_root" --multidiffusion "$suite_root" \
-      --output "$suite_root" >"$suite_root/aggregate_sd3.log" 2>&1; then
-      echo "[FAIL] SD3 three-seed aggregation; see aggregate_sd3.log" >&2
+      --output "$suite_root" --seeds "${suite_seeds[@]}" >"$suite_root/aggregate_sd3.log" 2>&1; then
+      echo "[FAIL] SD3 ${#suite_seeds[@]}-seed aggregation; see aggregate_sd3.log" >&2
       suite_failed=true
     fi
   else
-    echo "[SKIP] SD3 three-seed aggregation: incomplete seed set" >&2
+    echo "[SKIP] SD3 ${#suite_seeds[@]}-seed aggregation: incomplete seed set" >&2
     suite_failed=true
   fi
   if [[ "$suite_failed" == true ]]; then
@@ -773,7 +794,7 @@ PY
     exit 1
   fi
   printf '%s\n' "${diagnostic_ids[@]}" "${suite_seeds[@]}" > "$suite_root/suite_complete.txt"
-  echo "[SUITE PASS] All three-seed profiles completed: $suite_root"
+  echo "[SUITE PASS] All ${#suite_seeds[@]}-seed profiles completed: $suite_root"
   exit 0
 fi
 
@@ -932,7 +953,9 @@ fi
 case "$profile_kind" in
   full1073)
     "$python_bin" -u "$SCRIPT_DIR/verify_run.py" "$experiment" "$run_dir" 2>&1 | tee "$run_dir/verification.log"
-    if [[ "$experiment" != *_sd3_ffm ]]; then
+    if [[ "$experiment" == md_sd15_ddim ]]; then
+      "$python_bin" -u "$SCRIPT_DIR/finalize_md_sd15_ddim_export.py" "$run_dir" 2>&1 | tee "$run_dir/metric_export.log"
+    elif [[ "$experiment" != *_sd3_ffm ]]; then
       "$python_bin" -u "$SCRIPT_DIR/prepare_metric_export.py" "$experiment" "$run_dir" 2>&1 | tee "$run_dir/metric_export.log"
     fi
     ;;

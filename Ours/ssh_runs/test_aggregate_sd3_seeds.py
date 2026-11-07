@@ -9,7 +9,15 @@ from pathlib import Path
 from zipfile import ZipFile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aggregate_sd3_seeds import METHODS, SEEDS, aggregate, main  # noqa: E402
+from aggregate_sd3_seeds import METHODS, SEEDS, aggregate, main, summarize  # noqa: E402
+
+
+def test_ten_sd3_seed_statistics() -> None:
+    seeds = tuple(2024 + 10_000_000 * index for index in range(10))
+    result = summarize([float(index) for index in range(10)], seeds)
+    assert result["n_seeds"] == 10
+    assert result["mean"] == 4.5
+    assert len(result["per_seed"]) == 10
 
 
 def test_complete_sd3_seed_aggregate_and_reject_wrong_seed(tmp_path: Path, monkeypatch) -> None:
@@ -85,6 +93,9 @@ def test_complete_sd3_seed_aggregate_and_reject_wrong_seed(tmp_path: Path, monke
     fid = result["methods"]["semanticdraw"]["fid"]
     assert fid["mean"] == 12.0 and fid["std_across_seeds"] == 2.0
     assert result["paired_anchor_minus_baseline"]["fid"]["mean"] == 1.0
+    two_seed_result = aggregate(roots, SEEDS[:2])
+    assert two_seed_result["base_seeds"] == SEEDS[:2]
+    assert two_seed_result["methods"]["semanticdraw"]["fid"]["n_seeds"] == 2
     suite_root = tmp_path / "suite"
     for method, profile in (("semanticdraw", "sem_sd3_ffm"),
                             ("anchordraw", "ours_sd3_ffm"),

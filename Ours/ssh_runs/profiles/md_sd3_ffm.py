@@ -33,7 +33,7 @@ def display(*values):
             print(value)
 
 # Notebook: Ours/colab_multidiffusion_experiments/multidiffusion_sd3_flashflowmatch_naive_colab.ipynb
-# Notebook SHA256: a7321c180347152c60e584382fae823fde8d90b89e799f6261b8e1e8852559f7
+# Notebook SHA256: 7d4530e1a36b20be954ecfea5fe9e0b3edc185c3d35b3e3aa9f0613f17140993
 
 # --- Source notebook cell 4 ---
 # Cấu hình Colab cho MultiDiffusion naive SD3 + Flash Flow Match.
@@ -110,9 +110,8 @@ MODEL_REVISION = "ea42f8cef0f178587cf766dc8129abd379c90671"
 FLASH_SD3_REVISION = "fb184d916f9193a81a4264758eb0ebbff1c56b69"
 SAMPLER_NAME = "FlashFlowMatchEulerDiscreteScheduler"
 TARGET_SIZE = (1024, 1024)
-SD3_BASE_SEEDS = (2024, 10002024, 20002024)
 BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", "2024"))
-assert BASE_SEED in SD3_BASE_SEEDS, f"Use one of the paired SD3 seeds: {SD3_BASE_SEEDS}"
+assert 0 <= BASE_SEED and BASE_SEED + 1072 < 2**32, f"Invalid SD3 base seed for 1073 images: {BASE_SEED}"
 NEGATIVE_PROMPT = ""
 
 FFM_SCHEDULE_STEPS = 50
@@ -237,7 +236,7 @@ direct_url_text = importlib.metadata.distribution("diffusers").read_text("direct
 direct_url = json.loads(direct_url_text or "{}")
 diffusers_commit = direct_url.get("vcs_info", {}).get("commit_id")
 if diffusers_commit != DIFFUSERS_COMMIT_EXPECTED:
-    raise RuntimeError(f"Wrong diffusers commit: {diffusers_commit!r}; expected {DIFFUSERS_COMMIT_EXPECTED}.")
+    raise RuntimeError(f"Wrong diffusers commit: {diffusers_commit!r}; expected {DIFFUSERS_COMMIT_EXPECTED}. Install the pinned initml/diffusers Git revision in this Python environment.")
 dependency_versions = {
     package: importlib.metadata.version(package)
     for package in (

@@ -1,6 +1,6 @@
 """Aggregate complete SD3 Colab exports and their saved metric reports.
 
-Each method directory contains three ``*seedN*__metric_export.zip`` files and
+Each method directory contains one ``*seedN*__metric_export.zip`` per seed and
 the corresponding ``*seedN*__metrics.json`` sidecars. This tool does not run
 SD3 or treat the historical partial export as a valid result.
 """
@@ -39,6 +39,14 @@ def _number(value: object, label: str) -> float:
     if not math.isfinite(result):
         raise RuntimeError(f"Nonfinite {label}: {value!r}")
     return result
+
+
+def summarize(values: list[float], seeds: tuple[int, ...]) -> dict:
+    if len(values) != len(seeds) or len(values) < 2:
+        raise RuntimeError("An SD3 aggregate needs one value per seed and at least two seeds")
+    return {"per_seed": dict(zip((str(seed) for seed in seeds), values)),
+            "mean": statistics.fmean(values), "std_across_seeds": statistics.stdev(values),
+            "n_seeds": len(seeds)}
 
 
 def _read_one(root: Path, method: str, seed: int) -> tuple[dict, dict]:
@@ -135,13 +143,19 @@ def _read_one(root: Path, method: str, seed: int) -> tuple[dict, dict]:
     return config, values
 
 
-def aggregate(roots: dict[str, Path]) -> dict:
+def aggregate(roots: dict[str, Path], seeds: tuple[int, ...] = SEEDS) -> dict:
     if set(roots) != set(METHODS):
         raise RuntimeError(f"Provide exactly these methods: {METHODS}")
+    if len(seeds) < 2 or len(set(seeds)) != len(seeds) or any(
+        seed < 0 or seed + 1072 >= 2**32 for seed in seeds
+    ):
+        raise RuntimeError("Pass at least two distinct valid base seeds")
+    if any(b - a <= 1072 for a, b in zip(sorted(seeds), sorted(seeds)[1:])):
+        raise RuntimeError("SD3 per-image seed ranges overlap")
     profiles = {"semanticdraw": "sem_sd3_ffm", "anchordraw": "ours_sd3_ffm",
                 "multidiffusion": "md_sd3_ffm"}
     suite_dirs = [roots[method] / f"seed_{seed}" / profiles[method]
-                  for method in METHODS for seed in SEEDS]
+                  for method in METHODS for seed in seeds]
     if any(path.exists() for path in suite_dirs):
         if not all(path.is_dir() for path in suite_dirs):
             raise RuntimeError("SD3 SSH suite layout is missing a method or seed")
@@ -169,10 +183,10 @@ def aggregate(roots: dict[str, Path]) -> dict:
     for method in METHODS:
         configs[method] = {}
         scores[method] = {}
-        for seed in SEEDS:
+        for seed in seeds:
             configs[method][seed], scores[method][seed] = _read_one(roots[method], method, seed)
         comparable = []
-        for seed in SEEDS:
+        for seed in seeds:
             config = dict(configs[method][seed])
             for key in ("base_seed", "white_bootstrap_seed", "white_latent_sha256",
                         "run_signature", "experiment_id", "google_drive_export_root"):
@@ -180,7 +194,7 @@ def aggregate(roots: dict[str, Path]) -> dict:
             comparable.append(config)
         if comparable[1:] != comparable[:-1]:
             raise RuntimeError(f"Scientific configuration changed across {method} seeds")
-    for seed in SEEDS:
+    for seed in seeds:
         baseline = configs["semanticdraw"][seed]
         anchor = configs["anchordraw"][seed]
         for key in ("model_id", "model_revision", "flash_sd3_revision", "diffusers_commit",
@@ -194,29 +208,24 @@ def aggregate(roots: dict[str, Path]) -> dict:
                     "white_latent_sha256"):
             if key not in baseline or key not in anchor or baseline[key] != anchor[key]:
                 raise RuntimeError(f"SemanticDraw and AnchorDraw differ in {key} for seed {seed}")
-    shared_metric_source = {configs[method][seed]["metrics_source_sha256"] for method in METHODS for seed in SEEDS}
-    shared_manifests = {configs[method][seed]["manifest_sha256"] for method in METHODS for seed in SEEDS}
+    shared_metric_source = {configs[method][seed]["metrics_source_sha256"] for method in METHODS for seed in seeds}
+    shared_manifests = {configs[method][seed]["manifest_sha256"] for method in METHODS for seed in seeds}
     if len(shared_metric_source) != 1 or len(shared_manifests) != 1:
         raise RuntimeError("SD3 methods used different metric source or sample manifest")
     for key in ("model_id", "model_revision", "flash_sd3_revision", "diffusers_commit",
                 "dependency_versions", "coco_annotations_sha256"):
-        values = [configs[method][seed].get(key) for method in METHODS for seed in SEEDS]
+        values = [configs[method][seed].get(key) for method in METHODS for seed in seeds]
         if any(value is None for value in values) or any(value != values[0] for value in values[1:]):
             raise RuntimeError(f"SD3 methods or seeds differ in {key}")
 
-    def stats(values: list[float]) -> dict:
-        return {"per_seed": dict(zip((str(seed) for seed in SEEDS), values)),
-                "mean": statistics.fmean(values), "std_across_seeds": statistics.stdev(values),
-                "n_seeds": 3}
-
     return {
-        "base_seeds": SEEDS,
+        "base_seeds": seeds,
         "samples_per_seed": 1073,
-        "std_definition": "sample standard deviation across three seed-level metric scores, ddof=1",
-        "methods": {method: {key: stats([scores[method][seed][key] for seed in SEEDS]) for key in METRICS}
+        "std_definition": f"sample standard deviation across {len(seeds)} seed-level metric scores, ddof=1",
+        "methods": {method: {key: summarize([scores[method][seed][key] for seed in seeds], seeds) for key in METRICS}
                     for method in METHODS},
         "paired_anchor_minus_baseline": {
-            key: stats([scores["anchordraw"][seed][key] - scores["semanticdraw"][seed][key] for seed in SEEDS])
+            key: summarize([scores["anchordraw"][seed][key] - scores["semanticdraw"][seed][key] for seed in seeds], seeds)
             for key in METRICS
         },
     }
@@ -227,18 +236,21 @@ def main() -> None:
     for method in METHODS:
         parser.add_argument(f"--{method}", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--seeds", type=int, nargs="+", default=list(SEEDS))
     args = parser.parse_args()
-    result = aggregate({method: getattr(args, method) for method in METHODS})
+    seeds = tuple(args.seeds)
+    result = aggregate({method: getattr(args, method) for method in METHODS}, seeds)
     args.output.mkdir(parents=True, exist_ok=True)
-    json_path = args.output / "sd3_three_seed_metrics.json"
-    csv_path = args.output / "sd3_three_seed_metrics.csv"
+    label = "three" if len(seeds) == 3 else ("ten" if len(seeds) == 10 else str(len(seeds)))
+    json_path = args.output / f"sd3_{label}_seed_metrics.json"
+    csv_path = args.output / f"sd3_{label}_seed_metrics.csv"
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     with csv_path.open("w", newline="", encoding="utf-8") as output:
         writer = csv.writer(output)
-        writer.writerow(["method", "metric", *[f"seed_{seed}" for seed in SEEDS], "mean", "std_across_seeds"])
+        writer.writerow(["method", "metric", *[f"seed_{seed}" for seed in seeds], "mean", "std_across_seeds"])
         for method, metrics in (*result["methods"].items(), ("anchor_minus_baseline", result["paired_anchor_minus_baseline"])):
             for key, row in metrics.items():
-                writer.writerow([method, key, *[row["per_seed"][str(seed)] for seed in SEEDS],
+                writer.writerow([method, key, *[row["per_seed"][str(seed)] for seed in seeds],
                                  row["mean"], row["std_across_seeds"]])
     print(f"[PASS] {json_path} and {csv_path}", flush=True)
 

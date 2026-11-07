@@ -1,4 +1,4 @@
-"""Aggregate verified, paired full1073 SSH runs across three base seeds."""
+"""Aggregate verified, paired full1073 SSH runs across multiple base seeds."""
 
 from __future__ import annotations
 
@@ -56,20 +56,20 @@ def finite_number(value: object, label: str) -> float:
 
 
 def summarize(values: list[float], seeds: list[int]) -> dict:
-    if len(values) != len(seeds) or len(values) != 3:
-        raise RuntimeError("A three-seed aggregate requires exactly three values")
+    if len(values) != len(seeds) or len(values) < 2:
+        raise RuntimeError("A multi-seed aggregate requires one value per seed and at least two seeds")
     return {
         "per_seed": {str(seed): value for seed, value in zip(seeds, values)},
         "mean": statistics.fmean(values),
         "std_across_seeds": statistics.stdev(values),
         "std_definition": "sample standard deviation, ddof=1",
-        "n_seeds": 3,
+        "n_seeds": len(seeds),
     }
 
 
 def aggregate(suite_root: Path, seeds: list[int]) -> dict:
-    if len(seeds) != 3 or len(set(seeds)) != 3 or any(seed < 0 for seed in seeds):
-        raise RuntimeError("Pass exactly three distinct nonnegative base seeds")
+    if len(seeds) < 2 or len(set(seeds)) != len(seeds) or any(seed < 0 or seed + 1072 >= 2**32 for seed in seeds):
+        raise RuntimeError("Pass at least two distinct valid base seeds")
     # Distillation++ uses a private teacher stream at sample_seed + 1_000_003.
     # Leave the full 1,073-image teacher range clear of the next seed group.
     if any(b - a <= 1_000_003 + 1072 for a, b in zip(sorted(seeds), sorted(seeds)[1:])):
@@ -90,7 +90,7 @@ def aggregate(suite_root: Path, seeds: list[int]) -> dict:
         if not complete.is_file() or complete.read_text(encoding="utf-8").splitlines() != [
             *BENCHMARKS, "pytorch_fid", "cleanfid", "ttur_fid"
         ]:
-            raise RuntimeError(f"Missing or incomplete three-seed source group: {seed_root}")
+            raise RuntimeError(f"Missing or incomplete source group: {seed_root}")
         for profile in BENCHMARKS:
             run_dir = seed_root / profile
             if (run_dir / "benchmark_complete.txt").read_text(encoding="utf-8").strip() != profile:
@@ -206,7 +206,7 @@ def aggregate(suite_root: Path, seeds: list[int]) -> dict:
         "base_seeds": seeds,
         "per_image_seed_rule": "base_seed + zero_based_manifest_index",
         "samples_per_seed": 1073,
-        "std_definition": "sample standard deviation across three independent seed-level scores, ddof=1",
+        "std_definition": f"sample standard deviation across {len(seeds)} independent seed-level scores, ddof=1",
         "main_metrics": main,
         "paired_deltas_proposed_minus_baseline": paired_deltas,
         "auxiliary_fid": auxiliary,
@@ -214,8 +214,9 @@ def aggregate(suite_root: Path, seeds: list[int]) -> dict:
 
 
 def write_outputs(result: dict, suite_root: Path) -> tuple[Path, Path]:
-    json_path = suite_root / "three_seed_metrics.json"
-    csv_path = suite_root / "three_seed_metrics.csv"
+    label = "three" if len(result["base_seeds"]) == 3 else ("ten" if len(result["base_seeds"]) == 10 else str(len(result["base_seeds"])))
+    json_path = suite_root / f"{label}_seed_metrics.json"
+    csv_path = suite_root / f"{label}_seed_metrics.csv"
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     rows = []
     for section, groups in (("main", result["main_metrics"]),
@@ -250,11 +251,11 @@ def write_outputs(result: dict, suite_root: Path) -> tuple[Path, Path]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("suite_root", type=Path)
-    parser.add_argument("seeds", type=int, nargs=3)
+    parser.add_argument("seeds", type=int, nargs="+")
     args = parser.parse_args()
     result = aggregate(args.suite_root, args.seeds)
     json_path, csv_path = write_outputs(result, args.suite_root)
-    print(f"[PASS] Three-seed metric aggregate: {json_path} and {csv_path}", flush=True)
+    print(f"[PASS] {len(args.seeds)}-seed metric aggregate: {json_path} and {csv_path}", flush=True)
 
 
 if __name__ == "__main__":

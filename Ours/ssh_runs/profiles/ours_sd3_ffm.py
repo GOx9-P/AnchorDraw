@@ -33,7 +33,7 @@ def display(*values):
             print(value)
 
 # Notebook: Ours/semantic_anchor_experiments/anchordraw_sd3_flashflowmatch_l04_sigmad4_colab.ipynb
-# Notebook SHA256: 5e459e52c318b915c5f9a1e3bc468d2e690181c008df247e6e1758b34eaeaaef
+# Notebook SHA256: 7fb9f372fe8338b37ddab48b028adc89fad84a0b80b2b701794d4a7f10483b4e
 
 # --- Source notebook cell 6 ---
 from pathlib import Path
@@ -45,7 +45,7 @@ import hashlib
 RUN_PROFILE = os.environ.get('RUN_PROFILE', 'smoke_bs2')  # choices: "smoke_bs2", "mini32", "full1073"
 
 # SD3 1024 khá nặng. BATCH_SIZE chỉ là dataloader batch, generation vẫn chạy tuần tự từng ảnh.
-COLAB_GPU_MODE = os.environ.get('COLAB_GPU_MODE', 'high_vram')  # choices: "low_vram", "high_vram", "a100_80gb"
+COLAB_GPU_MODE = os.environ.get('COLAB_GPU_MODE', 'high_vram')  # choices: "low_vram", "high_vram", "high_vram_24gb", "a100_80gb"
 LOW_VRAM_MODE = COLAB_GPU_MODE == "low_vram"
 
 MANIFEST_BY_PROFILE = {
@@ -60,7 +60,7 @@ EXPECTED_DATASET_SIZE_BY_PROFILE = {
 }
 
 assert RUN_PROFILE in MANIFEST_BY_PROFILE, f"Unknown RUN_PROFILE: {RUN_PROFILE}"
-assert COLAB_GPU_MODE in {"low_vram", "high_vram", "a100_80gb"}, f"Unknown COLAB_GPU_MODE: {COLAB_GPU_MODE}"
+assert COLAB_GPU_MODE in {"low_vram", "high_vram", "high_vram_24gb", "a100_80gb"}, f"Unknown COLAB_GPU_MODE: {COLAB_GPU_MODE}"
 
 RUN_MANIFEST = MANIFEST_BY_PROFILE[RUN_PROFILE]
 EXPECTED_DATASET_SIZE = EXPECTED_DATASET_SIZE_BY_PROFILE[RUN_PROFILE]
@@ -75,9 +75,8 @@ DIFFUSERS_COMMIT_EXPECTED = "53dcfcf3f3009a79fd484eed9b09ea76189da434"
 MODEL_FAMILY = "sd3"
 TARGET_SIZE = (1024, 1024)
 
-SD3_BASE_SEEDS = (2024, 10002024, 20002024)
 BASE_SEED = int(os.environ.get("ANCHORDRAW_BASE_SEED", "2024"))
-assert BASE_SEED in SD3_BASE_SEEDS, f"Use one of the paired SD3 seeds: {SD3_BASE_SEEDS}"
+assert 0 <= BASE_SEED and BASE_SEED + 1072 < 2**32, f"Invalid SD3 base seed for 1073 images: {BASE_SEED}"
 WHITE_BOOTSTRAP_SEED = BASE_SEED
 BATCH_SIZE = 1 if RUN_PROFILE == "full1073" else 2
 NUM_WORKERS = 1 if LOW_VRAM_MODE else 2
@@ -175,7 +174,7 @@ direct_url_text = importlib.metadata.distribution("diffusers").read_text("direct
 direct_url = json.loads(direct_url_text or "{}")
 diffusers_commit = direct_url.get("vcs_info", {}).get("commit_id")
 if diffusers_commit != DIFFUSERS_COMMIT_EXPECTED:
-    raise RuntimeError(f"Wrong diffusers commit: {diffusers_commit!r}; expected {DIFFUSERS_COMMIT_EXPECTED}.")
+    raise RuntimeError(f"Wrong diffusers commit: {diffusers_commit!r}; expected {DIFFUSERS_COMMIT_EXPECTED}. Install the pinned initml/diffusers Git revision in this Python environment.")
 run_config["diffusers_commit"] = diffusers_commit
 run_config["dependency_versions"] = {
     package: importlib.metadata.version(package)

@@ -5,10 +5,21 @@ import json
 
 import pytest
 
-from aggregate_seeds import BENCHMARKS, aggregate, write_outputs
+from aggregate_seeds import BENCHMARKS, aggregate, summarize, write_outputs
 
 
 SEEDS = [2024, 10002024, 20002024]
+
+
+def test_ten_seed_mean_and_sample_standard_deviation():
+    seeds = [2024 + 10_000_000 * index for index in range(10)]
+    result = summarize([float(index) for index in range(10)], seeds)
+    assert result["n_seeds"] == 10
+    assert result["mean"] == 4.5
+    assert len(result["per_seed"]) == 10
+    assert result["std_across_seeds"] == pytest.approx(3.0276503540974917)
+
+
 SHARED_SNAPSHOT = (
     f"{'a' * 64}  /repo/Baseline/semantic-draw-main/src/model/pipeline.py\n"
     f"{'b' * 64}  /repo/Ours/src/metrics/evaluate.py\n"

@@ -93,7 +93,9 @@ def write_context(path: Path, coco_root: Path, gpu_mode: str) -> None:
 
 
 def check_completed(profile: str, kind: str, run_dir: Path, seed: str,
-                    context_path: Path) -> None:
+                    context_path: Path, *, generation_only: bool = False) -> None:
+    if generation_only and (profile != "md_sd15_ddim" or kind != "full1073"):
+        raise RuntimeError("Generation-only recovery is limited to MD SD1.5 DDIM")
     context = json.loads(context_path.read_text(encoding="utf-8"))
     if kind == "diagnostic":
         expected_marker = None
@@ -102,7 +104,7 @@ def check_completed(profile: str, kind: str, run_dir: Path, seed: str,
         expected_marker = None
         profile_file = SSH_ROOT / "metric_profiles" / f"{profile}.py"
     elif kind == "full1073":
-        expected_marker = profile
+        expected_marker = None if generation_only else profile
         profile_file = SSH_ROOT / "profiles" / f"{profile}.py"
     else:
         raise RuntimeError(f"Unknown profile kind: {kind}")
@@ -146,7 +148,7 @@ def check_completed(profile: str, kind: str, run_dir: Path, seed: str,
     if kind == "full1073":
         from verify_run import verify_run
         verify_run(profile, run_dir, check_pair=False)
-        if not profile.endswith("_sd3_ffm"):
+        if not generation_only and not profile.endswith("_sd3_ffm"):
             summaries = list(run_dir.rglob("metric_export_summary.json"))
             if len(summaries) != 1:
                 raise RuntimeError("Missing or duplicate metric export summary")
@@ -261,6 +263,12 @@ def main() -> None:
     check.add_argument("run_dir", type=Path)
     check.add_argument("seed")
     check.add_argument("context_path", type=Path)
+    repair = sub.add_parser("check-generation")
+    repair.add_argument("profile")
+    repair.add_argument("kind", choices=("full1073",))
+    repair.add_argument("run_dir", type=Path)
+    repair.add_argument("seed")
+    repair.add_argument("context_path", type=Path)
     resume = sub.add_parser("resume")
     resume.add_argument("run_dir", type=Path)
     resume.add_argument("seed")
@@ -274,9 +282,10 @@ def main() -> None:
         print(select_suite(args.output_root, args.gpu_mode, args.coco_root))
     elif args.action == "context":
         write_context(args.path, args.coco_root, args.gpu_mode)
-    elif args.action == "check":
+    elif args.action in {"check", "check-generation"}:
         try:
-            check_completed(args.profile, args.kind, args.run_dir, args.seed, args.context_path)
+            check_completed(args.profile, args.kind, args.run_dir, args.seed, args.context_path,
+                            generation_only=args.action == "check-generation")
         except (OSError, ValueError, KeyError, RuntimeError) as exc:
             print(f"[CHECKPOINT] {args.profile}: {exc}", file=sys.stderr)
             raise SystemExit(1) from None

@@ -172,3 +172,42 @@ def test_benchmark_reuse_requires_complete_metric_export(tmp_path, monkeypatch):
     (images / "0000.png").unlink()
     with pytest.raises(RuntimeError, match="Incomplete metric export"):
         check_completed(profile, "full1073", run, "2024", context)
+
+
+def test_md_ddim_recovery_requires_verified_generation_but_not_export(tmp_path, monkeypatch):
+    import verify_run
+
+    profile = "md_sd15_ddim"
+    run = tmp_path / "seed_2024" / profile
+    run.mkdir(parents=True)
+    (run / "verification.log").write_text(json.dumps({"profile": profile}), encoding="utf-8")
+    (run / "base_seed.txt").write_text("2024\n", encoding="utf-8")
+    (run / "gpu_mode.txt").write_text("a100_80gb\n", encoding="utf-8")
+    (run / "code_sha256.txt").write_text(_snapshot(), encoding="utf-8")
+    source = SSH_ROOT / "profiles" / f"{profile}.py"
+    (run / "profile_sha256.txt").write_text(
+        f"{hashlib.sha256(source.read_bytes()).hexdigest()}  {source}\n", encoding="utf-8")
+    dependencies = b"package==1\n"
+    (run / "pip_freeze.txt").write_bytes(dependencies)
+    coco = tmp_path / "coco"
+    hashes = {key: "f" * 64 for key in (
+        "manifest_sha256", "instances_sha256", "captions_sha256", "manifest_images_sha256")}
+    (run / "input_verification.json").write_text(
+        json.dumps({"coco_root": str(coco), **hashes}), encoding="utf-8")
+    context = tmp_path / "context.json"
+    context.write_text(json.dumps({
+        "gpu_mode": "a100_80gb", "coco_root": str(coco),
+        "shared_source": shared_source_snapshot(run / "code_sha256.txt"),
+        "dependencies_sha256": hashlib.sha256(dependencies).hexdigest(),
+        "inputs": {"sd15": hashes},
+    }), encoding="utf-8")
+    called = []
+    monkeypatch.setattr(verify_run, "verify_run", lambda *args, **kwargs: called.append((args, kwargs)))
+
+    check_completed(profile, "full1073", run, "2024", context, generation_only=True)
+    assert called == [((profile, run), {"check_pair": False})]
+    with pytest.raises(FileNotFoundError):
+        check_completed(profile, "full1073", run, "2024", context)
+    (run / "profile_sha256.txt").write_text(f"{'0' * 64}  {source}\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Profile source changed"):
+        check_completed(profile, "full1073", run, "2024", context, generation_only=True)
