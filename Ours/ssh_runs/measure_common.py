@@ -49,6 +49,8 @@ def measure_group(group: str, seed_root: Path, coco_root: Path) -> dict:
                 (scan.get("generation_profile_matches_current", True), "generation profile differs from current source"),
                 (scan.get("generation_python_matches_metric", True), "metric Python differs from generation Python"),
             ) if not condition]
+            + ([f"{len(set(scan.get('summary_missing_indices', [])) & common)} compared image(s) have no saved generation-summary row; seed and runtime cannot be independently verified"]
+               if set(scan.get("summary_missing_indices", [])) & common else [])
             for profile, scan in scans.items()
         },
         "unavailable_profiles": unavailable, "metric_paths": {},

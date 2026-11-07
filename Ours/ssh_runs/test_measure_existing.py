@@ -70,6 +70,24 @@ def test_existing_images_use_only_matching_manifest_indices(tmp_path, monkeypatc
     (image_dir.parent / "generation_summary.json").write_text(json.dumps(summary), encoding="utf-8")
     assert measure_existing.measure("sem_sd15_lcm", run, coco)["status"] == "measured"
     assert len(calls) == 3  # Timing provenance changed, so the metric is recomputed.
+    paired_run = tmp_path / "seed_2024" / "ours_sd15_lcm"
+    paired_images = paired_run / "source" / "generated_images"
+    paired_images.mkdir(parents=True)
+    for index in range(3):
+        Image.new("RGB", (512, 512), (index, 0, 0)).save(
+            paired_images / f"{index:04d}_sample_{index}_generated.png")
+    (paired_run / "base_seed.txt").write_text("2024\n", encoding="utf-8")
+    paired_verified = {**verified, "profile": "ours_sd15_lcm"}
+    (paired_run / "input_verification.json").write_text(
+        json.dumps(paired_verified), encoding="utf-8")
+    monkeypatch.setattr(verify_inputs, "verify_inputs", lambda profile, *_: {
+        **verified, "profile": profile})
+    paired = measure_existing.measure(
+        "ours_sd15_lcm", paired_run, coco, common_indices={0, 2}, label="common_sd15_lcm")
+    assert paired["status"] == "measured"
+    assert paired["generated_count"] == 3
+    assert paired["evaluated_count"] == 2
+    assert (paired_run / "available_metrics" / "common_sd15_lcm" / "report.json").is_file()
 
 
 def test_common_group_uses_intersection_and_reports_each_source_count(tmp_path, monkeypatch):
@@ -79,7 +97,8 @@ def test_common_group_uses_intersection_and_reports_each_source_count(tmp_path, 
     (seed_root / "second").mkdir()
     selections = {"first": [0, 2], "second": [1, 2]}
     monkeypatch.setattr(measure_common, "_scan", lambda profile, *_: {
-        "available_indices": selections[profile], "generated_count": 2})
+        "available_indices": selections[profile], "generated_count": 2,
+        "summary_missing_indices": [2] if profile == "first" else []})
     measured = []
 
     def fake_measure(profile, *_args, **kwargs):
@@ -91,4 +110,5 @@ def test_common_group_uses_intersection_and_reports_each_source_count(tmp_path, 
     assert report["common_indices"] == [2]
     assert report["common_count"] == 1
     assert report["source_generated_counts"] == {"first": 2, "second": 2}
+    assert "1 compared image(s) have no saved generation-summary row" in report["provenance_warnings"]["first"][0]
     assert measured == [("first", {2}), ("second", {2})]

@@ -207,7 +207,7 @@ def measure(profile: str, run_dir: Path, coco_root: Path, *,
         if not label or not all(char.isalnum() or char == "_" for char in label):
             raise ValueError(f"Invalid metric label: {label!r}")
         output = output / label
-    output.mkdir(exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True)
     source_indices = list(scan["available_indices"])
     if common_indices is not None:
         if not common_indices.issubset(set(source_indices)):
