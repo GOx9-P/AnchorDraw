@@ -36,6 +36,7 @@ list_profiles() {
 experiment=""; coco_root=""; output_root=""; run_tag=""
 dataset_root=""; export_dir=""; reference_dir=""; metric_experiments=""; ttur_fid_file=""
 python_bin="${PYTHON_BIN:-python3}"
+python_explicit=false
 sd3_python_bin="${ANCHORDRAW_SD3_PYTHON:-}"
 gpu_mode="a100_80gb"
 run_profile_override=""
@@ -60,7 +61,7 @@ while (($#)); do
     --experiments) metric_experiments="${2:?Missing experiment names}"; shift 2 ;;
     --ttur-fid-file) ttur_fid_file="${2:?Missing TTUR file}"; shift 2 ;;
     --tag) run_tag="${2:?Missing run tag}"; shift 2 ;;
-    --python) python_bin="${2:?Missing Python command}"; shift 2 ;;
+    --python) python_bin="${2:?Missing Python command}"; python_explicit=true; shift 2 ;;
     --gpu-mode) gpu_mode="${2:?Missing GPU mode}"; shift 2 ;;
     --run-profile) run_profile_override="${2:?Missing run profile}"; shift 2 ;;
     --base-seed) base_seed="${2:?Missing base seed}"; base_seed_explicit=true; shift 2 ;;
@@ -130,6 +131,10 @@ if [[ "$profile_kind" == "full1073" && -n "$run_profile_override" && "$run_profi
 fi
 if [[ "$profile_kind" == "metric" && -n "$run_profile_override" ]]; then
   echo "--run-profile applies only to generation diagnostics" >&2; exit 2
+fi
+if [[ "$profile_kind" == "full1073" && "$experiment" == *_sd3_ffm &&
+      "$python_explicit" == false && -n "$sd3_python_bin" ]]; then
+  python_bin="$sd3_python_bin"
 fi
 if ! command -v "$python_bin" >/dev/null 2>&1; then
   echo "Python command not found: $python_bin" >&2; exit 2
@@ -511,31 +516,7 @@ PY
         return 0
       fi
       echo "[STALE] $seed_label/$id: saved result no longer passes the checkpoint"
-    fi
-    if [[ -d "$run_dir" && ! -f "$log_file.ok" && "$id" == *_sd3_ffm && "$force_profile" != true ]] &&
-       "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" resume \
-         "$run_dir" "$seed_label" "$suite_root/.checkpoint_context.json" >/dev/null 2>&1; then
-      if claim_profile_attempt "$id" "$seed_label" "$profile_kind"; then
-        :
-      else
-        local claim_status=$?
-        printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" "$claim_status" "$log_file" >> "$suite_root/suite_failures.tsv"
-        echo "[STOP] $seed_label/$id: benchmark attempt budget unavailable; existing images preserved" >&2
-        return 1
-      fi
-      echo "[RESUME] $seed_label/$id: continuing incomplete SD3 images"
-      profile_ran=true
-      if "${command[@]}" --resume >>"$log_file" 2>&1; then
-        touch -- "$log_file.ok"
-        echo "[PASS] $seed_label/$id after resume | log=$log_file"
-        return 0
-      else
-        local resume_status=$?
-        printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" "$resume_status" "$log_file" >> "$suite_root/suite_failures.tsv"
-        echo "[FAIL] $seed_label/$id (resume exit=$resume_status) | log=$log_file" >&2
-        tail -n 3 -- "$log_file" >&2 || true
-        return 1
-      fi
+      if [[ -f "$log_file.ok" ]]; then mv -- "$log_file.ok" "$log_file.ok.stale_$(date -u +%Y%m%dT%H%M%S)_$RANDOM"; fi
     fi
     if [[ "$id" == md_sd15_ddim && -d "$run_dir" && -s "$run_dir/verification.log" &&
           ! -e "$run_dir/benchmark_complete.txt" && "$force_profile" != true ]] &&
@@ -553,10 +534,25 @@ PY
         fi
         rm -f -- "$run_dir/benchmark_complete.txt"
       fi
-      printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" 1 "$log_file" >> "$suite_root/suite_failures.tsv"
-      echo "[FAIL RECOVERY] $seed_label/$id: verified images preserved | log=$log_file" >&2
+      echo "[FAIL RECOVERY] $seed_label/$id: trying available-image metrics on saved images | log=$log_file" >&2
       tail -n 5 -- "$log_file" >&2 || true
-      return 1
+    fi
+    # Any saved image prevents automatic regeneration. A separate report
+    # measures only validated existing images and records coverage / 1073.
+    if [[ "$profile_kind" == "full1073" && -d "$run_dir" && "$force_profile" != true ]] &&
+       [[ -n "$(find "$run_dir" -type f -name '*_generated.png' -print -quit 2>/dev/null)" ]]; then
+      echo "[EXISTING IMAGES] $seed_label/$id: measuring saved images; generation skipped"
+      if "$profile_python_bin" -u "$SCRIPT_DIR/measure_existing.py" \
+           "$id" "$run_dir" "$coco_root" >>"$log_file" 2>&1; then
+        printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" 4 "$log_file" >> "$suite_root/suite_failures.tsv"
+        echo "[MEASURED EXISTING] $seed_label/$id: available-image metric saved; full benchmark remains unverified | log=$log_file"
+        return 4
+      else
+        printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" 1 "$log_file" >> "$suite_root/suite_failures.tsv"
+        echo "[FAIL EXISTING METRIC] $seed_label/$id: images preserved | log=$log_file" >&2
+        tail -n 5 -- "$log_file" >&2 || true
+        return 1
+      fi
     fi
     if claim_profile_attempt "$id" "$seed_label" "$profile_kind"; then
       :
@@ -577,23 +573,11 @@ PY
       return 0
     else
       local status=$?
-      if [[ "$id" == *_sd3_ffm ]]; then
-        local image_failure_log=""
-        image_failure_log="$(find "$suite_root/seed_$active_base_seed/$id/anchordraw_runs" -name failed_images.jsonl -type f -print -quit 2>/dev/null || true)"
-        if [[ -n "$image_failure_log" ]]; then
-          if claim_profile_attempt "$id" "$seed_label" "$profile_kind"; then
-            echo "[RETRY] $seed_label/$id: resuming only missing SD3 indices"
-            if "${command[@]}" --resume >>"$log_file" 2>&1; then
-              touch -- "$log_file.ok"
-              echo "[PASS] $seed_label/$id after resume | log=$log_file"
-              return 0
-            else
-              status=$?
-            fi
-          else
-            echo "[STOP] $seed_label/$id: no SD3 resume attempt remains; existing images preserved" >&2
-          fi
-        fi
+      if [[ "$profile_kind" == "full1073" && -d "$run_dir" ]] &&
+         [[ -n "$(find "$run_dir" -type f -name '*_generated.png' -print -quit 2>/dev/null)" ]]; then
+        echo "[EXISTING IMAGES] $seed_label/$id: generation failed; measuring saved images" >>"$log_file"
+        "$profile_python_bin" -u "$SCRIPT_DIR/measure_existing.py" \
+          "$id" "$run_dir" "$coco_root" >>"$log_file" 2>&1 || true
       fi
       printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" "$status" "$log_file" >> "$suite_root/suite_failures.tsv"
       echo "[FAIL] $seed_label/$id (exit=$status) | log=$log_file" >&2
@@ -609,6 +593,7 @@ PY
   done
   for active_base_seed in "${suite_seeds[@]}"; do
     seed_root="$suite_root/seed_$active_base_seed"
+    declare -A benchmark_ok=()
     seed_benchmarks_ok=true
     seed_benchmarks_reran=false
     sem_lcm_reran=false
@@ -620,8 +605,11 @@ PY
     fi
     for id in "${benchmark_ids[@]}"; do
       if ! run_suite_profile "$id"; then
+        benchmark_ok["$id"]=false
         suite_failed=true
         if [[ "$id" != *_sd3_ffm ]]; then seed_benchmarks_ok=false; fi
+      else
+        benchmark_ok["$id"]=true
       fi
       if [[ "$profile_ran" == true && "$id" != *_sd3_ffm ]]; then seed_benchmarks_reran=true; fi
       if [[ "$profile_ran" == true && "$id" == sem_sd15_lcm ]]; then sem_lcm_reran=true; fi
@@ -629,7 +617,8 @@ PY
 
   # These two notebooks specifically evaluate the verified SemanticDraw SD1.5 LCM export.
   export_dir="$seed_root/sem_sd15_lcm/metric_export"
-  if [[ -f "$export_dir/metric_generated_manifest.jsonl" ]]; then
+  if [[ -f "$suite_root/runner_logs/$active_base_seed/sem_sd15_lcm.log.ok" &&
+        -f "$export_dir/metric_generated_manifest.jsonl" ]]; then
     force_profile="$sem_lcm_reran"
     if ! run_suite_profile pytorch_fid --export-dir "$export_dir"; then suite_failed=true; fi
     pytorch_reran="$profile_ran"
@@ -758,6 +747,33 @@ PY
     echo "[SKIP] seed_$active_base_seed/cleanfid: one or more 14 source benchmarks missing" >&2
     suite_failed=true
   fi
+  for common_group in sd15_lcm sd15_hypersd sdxl_euler sd3_ffm; do
+    case "$common_group" in
+      sd15_lcm) common_members=(sem_sd15_lcm ours_sd15_lcm ours_sd15_lcm_dpp md_sd15_lcm) ;;
+      sd15_hypersd) common_members=(sem_sd15_hypersd ours_sd15_hypersd ours_sd15_hypersd_dpp ours_sd15_hypersd_pladis md_sd15_hypersd) ;;
+      sdxl_euler) common_members=(sem_sdxl_euler ours_sdxl_euler md_sdxl_euler) ;;
+      sd3_ffm) common_members=(sem_sd3_ffm ours_sd3_ffm md_sd3_ffm) ;;
+    esac
+    common_all_full=true
+    for common_member in "${common_members[@]}"; do
+      if [[ "${benchmark_ok[$common_member]:-false}" != true ]]; then common_all_full=false; break; fi
+    done
+    if [[ "$common_all_full" == true ]]; then
+      echo "[COMMON SKIP FULL] seed_$active_base_seed/$common_group: all methods already have verified 1073-image metrics"
+      continue
+    fi
+    common_python="$python_bin"
+    if [[ "$common_group" == sd3_ffm ]]; then common_python="$sd3_python_bin"; fi
+    common_log="$suite_root/runner_logs/$active_base_seed/common_metrics_$common_group.log"
+    if ! "$common_python" -u "$SCRIPT_DIR/measure_common.py" \
+         "$common_group" "$seed_root" "$coco_root" >"$common_log" 2>&1; then
+      echo "[FAIL COMMON METRIC] seed_$active_base_seed/$common_group | log=$common_log" >&2
+      tail -n 3 -- "$common_log" >&2 || true
+      suite_failed=true
+    else
+      tail -n 1 -- "$common_log"
+    fi
+  done
   seed_complete=true
   for id in "${fid_benchmark_ids[@]}" pytorch_fid cleanfid ttur_fid; do
     if [[ ! -f "$suite_root/runner_logs/$active_base_seed/$id.log.ok" ]]; then seed_complete=false; fi
@@ -805,6 +821,24 @@ PY
   printf '%s\n' "${diagnostic_ids[@]}" "${suite_seeds[@]}" > "$suite_root/suite_complete.txt"
   echo "[SUITE PASS] All ${#suite_seeds[@]}-seed profiles completed: $suite_root"
   exit 0
+fi
+
+# Existing-image measurement needs neither the generation model nor Hugging
+# Face access. Resolve this path before generation-only dependency checks.
+if [[ "$profile_kind" == "full1073" && "$resume_run" != true && -n "$run_tag" ]]; then
+  existing_output_root="$("$python_bin" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$output_root")"
+  existing_coco_root="$("$python_bin" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$coco_root")"
+  existing_run_dir="$existing_output_root/$run_tag/seed_$base_seed/$experiment"
+  if [[ -d "$existing_run_dir" ]] &&
+     [[ -n "$(find "$existing_run_dir" -type f -name '*_generated.png' -print -quit 2>/dev/null)" ]]; then
+    if "$python_bin" -u "$SCRIPT_DIR/verify_run.py" "$experiment" "$existing_run_dir" >/dev/null 2>&1; then
+      echo "[SKIP VERIFIED] $experiment: saved 1073-image artifacts pass verification | output=$existing_run_dir"
+      exit 0
+    fi
+    echo "[EXISTING IMAGES] $experiment: generation skipped; measuring saved images in $existing_run_dir"
+    "$python_bin" -u "$SCRIPT_DIR/measure_existing.py" "$experiment" "$existing_run_dir" "$existing_coco_root"
+    exit 4
+  fi
 fi
 
 for command_name in sha256sum find sort xargs cmp; do
@@ -884,7 +918,17 @@ if [[ "$resume_run" == true ]]; then
     echo "--resume requires an existing incomplete SD3 run: $run_dir" >&2; exit 2
   fi
 else
-  if ! mkdir -- "$run_dir"; then
+  if ! mkdir -- "$run_dir" 2>/dev/null; then
+    if [[ "$profile_kind" == "full1073" && -d "$run_dir" ]] &&
+       [[ -n "$(find "$run_dir" -type f -name '*_generated.png' -print -quit 2>/dev/null)" ]]; then
+      if "$python_bin" -u "$SCRIPT_DIR/verify_run.py" "$experiment" "$run_dir" >/dev/null 2>&1; then
+        echo "[SKIP VERIFIED] $experiment: existing 1073-image artifacts pass verification | output=$run_dir"
+        exit 0
+      fi
+      echo "[EXISTING IMAGES] $experiment: generation skipped; measuring saved images in $run_dir"
+      "$python_bin" -u "$SCRIPT_DIR/measure_existing.py" "$experiment" "$run_dir" "$coco_root"
+      exit 4
+    fi
     echo "Run directory already exists; choose another --tag: $run_dir" >&2; exit 2
   fi
 fi
