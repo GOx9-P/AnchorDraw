@@ -36,6 +36,7 @@ list_profiles() {
 experiment=""; coco_root=""; output_root=""; run_tag=""
 dataset_root=""; export_dir=""; reference_dir=""; metric_experiments=""; ttur_fid_file=""
 python_bin="${PYTHON_BIN:-python3}"
+sd3_python_bin="${ANCHORDRAW_SD3_PYTHON:-}"
 gpu_mode="a100_80gb"
 run_profile_override=""
 base_seed="2024"
@@ -133,9 +134,14 @@ fi
 if ! command -v "$python_bin" >/dev/null 2>&1; then
   echo "Python command not found: $python_bin" >&2; exit 2
 fi
+if [[ -z "$sd3_python_bin" ]]; then sd3_python_bin="$python_bin"; fi
+if [[ "$profile_kind" == "suite" ]] && ! command -v "$sd3_python_bin" >/dev/null 2>&1; then
+  echo "SD3 Python command not found: $sd3_python_bin" >&2; exit 2
+fi
 
 check_sd3_hf_access() {
-  "$python_bin" - "$1" <<'PY'
+  local access_python="${2:-$python_bin}"
+  "$access_python" - "$1" <<'PY'
 import ast
 import os
 import sys
@@ -442,12 +448,13 @@ else:
     path.write_text(json.dumps(metadata, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 PY
   echo "[SUITE] output=$suite_root | COCO=$coco_root"
-  if ! check_sd3_hf_access "$SCRIPT_DIR/profiles/sem_sd3_ffm.py"; then
+  if ! check_sd3_hf_access "$SCRIPT_DIR/profiles/sem_sd3_ffm.py" "$sd3_python_bin"; then
     echo "[SUITE WARN] SD3 access is unavailable now; non-SD3 profiles will still run" >&2
   fi
   prepare_coco
   "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" context \
-    "$suite_root/.checkpoint_context.json" "$coco_root" "$gpu_mode"
+    "$suite_root/.checkpoint_context.json" "$coco_root" "$gpu_mode" \
+    --sd3-python "$sd3_python_bin"
   if [[ -f "$suite_root/suite_complete.txt" ]]; then
     mkdir -p -- "$suite_root/_superseded/suite_markers"
     mv -- "$suite_root/suite_complete.txt" \
@@ -491,9 +498,11 @@ PY
     mkdir -p -- "$log_dir"
     local -a seed_args=()
     if [[ -n "${active_base_seed:-}" ]]; then seed_args=(--base-seed "$active_base_seed"); fi
+    local profile_python_bin="$python_bin"
+    if [[ "$id" == *_sd3_ffm ]]; then profile_python_bin="$sd3_python_bin"; fi
     local -a command=(bash "$SCRIPT_DIR/run_experiment.sh" --experiment "$id" \
       --coco-root "$coco_root" --output-root "$output_root" \
-      --tag "$run_tag" --python "$python_bin" --gpu-mode "$gpu_mode" "${seed_args[@]}" "$@")
+      --tag "$run_tag" --python "$profile_python_bin" --gpu-mode "$gpu_mode" "${seed_args[@]}" "$@")
     if [[ ( -f "$log_file.ok" || -s "$run_dir/verification.log" ) && "$force_profile" != true ]]; then
       if "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" check \
           "$id" "$profile_kind" "$run_dir" "$seed_label" "$suite_root/.checkpoint_context.json"; then

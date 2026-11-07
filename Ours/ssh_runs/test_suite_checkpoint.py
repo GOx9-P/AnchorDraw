@@ -8,7 +8,7 @@ import pytest
 
 from scientific_snapshot import shared_source_snapshot
 from suite_checkpoint import (AttemptLimitReached, SSH_ROOT, check_completed,
-                              claim_benchmark_attempt, select_suite)
+                              claim_benchmark_attempt, select_suite, write_context)
 from verify_diagnostic import RUNNER_FILES, verify_diagnostic
 
 
@@ -56,6 +56,35 @@ def test_benchmark_attempt_limit_persists_and_resets_for_changed_inputs(tmp_path
     payload["inputs"]["sd15"]["manifest_sha256"] = "d" * 64
     context.write_text(json.dumps(payload), encoding="utf-8")
     assert claim_benchmark_attempt("sem_sd15_lcm", "2024", context) == 1
+
+
+def test_separate_sd3_python_hash_preserves_non_sd3_attempts(tmp_path, monkeypatch):
+    import suite_checkpoint
+    import verify_inputs
+
+    hashes = {key: "a" * 64 for key in suite_checkpoint.INPUT_KEYS}
+    monkeypatch.setattr(verify_inputs, "verify_inputs", lambda *_: hashes)
+    monkeypatch.setattr(suite_checkpoint, "current_shared_source", lambda *_: ())
+    calls = []
+
+    def freeze(command):
+        calls.append(command)
+        return b"main==1\n" if command[0] == suite_checkpoint.sys.executable else b"sd3==1\n"
+
+    monkeypatch.setattr(suite_checkpoint.subprocess, "check_output", freeze)
+    context = tmp_path / ".checkpoint_context.json"
+    write_context(context, tmp_path / "coco", "a100_80gb", "sd3-python")
+    payload = json.loads(context.read_text(encoding="utf-8"))
+    assert [command[0] for command in calls] == [suite_checkpoint.sys.executable, "sd3-python"]
+    assert payload["dependencies_sha256"] == hashlib.sha256(b"main==1\n").hexdigest()
+    assert payload["sd3_dependencies_sha256"] == hashlib.sha256(b"sd3==1\n").hexdigest()
+
+    assert claim_benchmark_attempt("sem_sd15_lcm", "2024", context) == 1
+    assert claim_benchmark_attempt("sem_sd3_ffm", "2024", context) == 1
+    payload["sd3_dependencies_sha256"] = "f" * 64
+    context.write_text(json.dumps(payload), encoding="utf-8")
+    assert claim_benchmark_attempt("sem_sd15_lcm", "2024", context) == 2
+    assert claim_benchmark_attempt("sem_sd3_ffm", "2024", context) == 1
 
 
 def test_select_latest_matching_suite_and_legacy_run(tmp_path):
@@ -211,3 +240,41 @@ def test_md_ddim_recovery_requires_verified_generation_but_not_export(tmp_path, 
     (run / "profile_sha256.txt").write_text(f"{'0' * 64}  {source}\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="Profile source changed"):
         check_completed(profile, "full1073", run, "2024", context, generation_only=True)
+
+
+def test_sd3_checkpoint_uses_its_own_python_environment(tmp_path, monkeypatch):
+    import verify_run
+
+    profile = "sem_sd3_ffm"
+    run = tmp_path / "seed_2024" / profile
+    run.mkdir(parents=True)
+    (run / "verification.log").write_text(json.dumps({"profile": profile}), encoding="utf-8")
+    (run / "benchmark_complete.txt").write_text(profile + "\n", encoding="utf-8")
+    (run / "base_seed.txt").write_text("2024\n", encoding="utf-8")
+    (run / "gpu_mode.txt").write_text("a100_80gb\n", encoding="utf-8")
+    (run / "code_sha256.txt").write_text(_snapshot(), encoding="utf-8")
+    source = SSH_ROOT / "profiles" / f"{profile}.py"
+    (run / "profile_sha256.txt").write_text(
+        f"{hashlib.sha256(source.read_bytes()).hexdigest()}  {source}\n", encoding="utf-8")
+    (run / "pip_freeze.txt").write_bytes(b"sd3==1\n")
+    coco = tmp_path / "coco"
+    hashes = {key: "f" * 64 for key in (
+        "manifest_sha256", "instances_sha256", "captions_sha256", "manifest_images_sha256")}
+    (run / "input_verification.json").write_text(
+        json.dumps({"coco_root": str(coco), **hashes}), encoding="utf-8")
+    context = tmp_path / "context.json"
+    payload = {
+        "gpu_mode": "a100_80gb", "coco_root": str(coco),
+        "shared_source": shared_source_snapshot(run / "code_sha256.txt"),
+        "dependencies_sha256": hashlib.sha256(b"main==1\n").hexdigest(),
+        "sd3_dependencies_sha256": hashlib.sha256(b"sd3==1\n").hexdigest(),
+        "inputs": {"sd3": hashes},
+    }
+    context.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(verify_run, "verify_run", lambda *_, **__: {})
+
+    check_completed(profile, "full1073", run, "2024", context)
+    payload["sd3_dependencies_sha256"] = payload["dependencies_sha256"]
+    context.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Python environment changed"):
+        check_completed(profile, "full1073", run, "2024", context)

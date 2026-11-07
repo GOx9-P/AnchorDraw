@@ -76,20 +76,30 @@ def select_suite(output_root: Path, gpu_mode: str, coco_root: Path) -> str:
     return ""
 
 
-def write_context(path: Path, coco_root: Path, gpu_mode: str) -> None:
+def write_context(path: Path, coco_root: Path, gpu_mode: str,
+                  sd3_python: str | None = None) -> None:
     from verify_inputs import verify_inputs
 
     families = {"sd15": "sem_sd15_lcm", "sdxl": "sem_sdxl_euler", "sd3": "sem_sd3_ffm"}
     reports = {family: verify_inputs(profile, coco_root) for family, profile in families.items()}
     dependencies = subprocess.check_output([sys.executable, "-m", "pip", "freeze"])
+    sd3_dependencies = (subprocess.check_output([sd3_python, "-m", "pip", "freeze"])
+                        if sd3_python is not None else dependencies)
     payload = {
         "gpu_mode": gpu_mode,
         "coco_root": str(coco_root),
         "shared_source": current_shared_source(REPO_ROOT),
         "dependencies_sha256": _sha256(dependencies),
+        "sd3_dependencies_sha256": _sha256(sd3_dependencies),
         "inputs": {family: {key: report[key] for key in INPUT_KEYS} for family, report in reports.items()},
     }
     path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
+def _dependencies_sha256(context: dict, profile: str) -> str:
+    if profile.endswith("_sd3_ffm"):
+        return context.get("sd3_dependencies_sha256", context["dependencies_sha256"])
+    return context["dependencies_sha256"]
 
 
 def check_completed(profile: str, kind: str, run_dir: Path, seed: str,
@@ -128,7 +138,7 @@ def check_completed(profile: str, kind: str, run_dir: Path, seed: str,
     current_shared = tuple(tuple(item) for item in context["shared_source"])
     if stored_shared != current_shared:
         raise RuntimeError("Shared generation or metric source changed")
-    if _sha256((run_dir / "pip_freeze.txt").read_bytes()) != context["dependencies_sha256"]:
+    if _sha256((run_dir / "pip_freeze.txt").read_bytes()) != _dependencies_sha256(context, profile):
         raise RuntimeError("Python environment changed")
     if kind != "metric":
         saved = json.loads((run_dir / "input_verification.json").read_text(encoding="utf-8"))
@@ -176,7 +186,7 @@ def check_resume(run_dir: Path, seed: str, context_path: Path) -> None:
         raise RuntimeError("Partial run used another seed")
     if requested_gpu_mode(run_dir) != context["gpu_mode"]:
         raise RuntimeError("Partial run used another GPU preset")
-    if _sha256((run_dir / "pip_freeze.txt").read_bytes()) != context["dependencies_sha256"]:
+    if _sha256((run_dir / "pip_freeze.txt").read_bytes()) != _dependencies_sha256(context, run_dir.name):
         raise RuntimeError("Partial run used another Python environment")
     profile_file = SSH_ROOT / "profiles" / f"{run_dir.name}.py"
     recorded_profile = (run_dir / "profile_sha256.txt").read_text(encoding="utf-8").split()[0]
@@ -215,7 +225,7 @@ def claim_benchmark_attempt(profile: str, seed: str, context_path: Path) -> int:
         "gpu_mode": context["gpu_mode"],
         "coco_root": context["coco_root"],
         "shared_source": context["shared_source"],
-        "dependencies_sha256": context["dependencies_sha256"],
+        "dependencies_sha256": _dependencies_sha256(context, profile),
         "inputs": context["inputs"][family],
     }
     fingerprint = _sha256(json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8"))
@@ -257,6 +267,7 @@ def main() -> None:
     context.add_argument("path", type=Path)
     context.add_argument("coco_root", type=Path)
     context.add_argument("gpu_mode")
+    context.add_argument("--sd3-python")
     check = sub.add_parser("check")
     check.add_argument("profile")
     check.add_argument("kind", choices=("full1073", "diagnostic", "metric"))
@@ -281,7 +292,7 @@ def main() -> None:
     if args.action == "select":
         print(select_suite(args.output_root, args.gpu_mode, args.coco_root))
     elif args.action == "context":
-        write_context(args.path, args.coco_root, args.gpu_mode)
+        write_context(args.path, args.coco_root, args.gpu_mode, args.sd3_python)
     elif args.action in {"check", "check-generation"}:
         try:
             check_completed(args.profile, args.kind, args.run_dir, args.seed, args.context_path,
