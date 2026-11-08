@@ -21,6 +21,7 @@ usage() {
     'No arguments: run 21 diagnostics once, then 17 benchmarks and 3 FID tools for each of 10 base seeds (2024 + 10000000*n, n=0..9).' \
     'This is the only Bash entrypoint. Use --list for all experiment IDs.' \
     'Default GPU preset: a100_80gb (A100 80 GB).' \
+    'SD3: missing pinned diffusers is installed automatically into OUTPUT_ROOT/_sd3_python before generation.' \
     'SD3 requires accepted access to stabilityai/stable-diffusion-3-medium-diffusers and HF_TOKEN or a saved hf auth login on the SSH host.'
 }
 
@@ -143,6 +144,92 @@ if [[ -z "$sd3_python_bin" ]]; then sd3_python_bin="$python_bin"; fi
 if [[ "$profile_kind" == "suite" ]] && ! command -v "$sd3_python_bin" >/dev/null 2>&1; then
   echo "SD3 Python command not found: $sd3_python_bin" >&2; exit 2
 fi
+
+# Keep the pinned SD3 fork out of the Python environment used by completed
+# non-SD3 benchmarks. A private venv inherits their dependencies, but its
+# diffusers installation and pip snapshot are independent.
+sd3_diffusers_commit_ok() {
+  "$1" - <<'PY'
+import importlib.metadata
+import json
+import sys
+
+expected = "53dcfcf3f3009a79fd484eed9b09ea76189da434"
+try:
+    metadata = importlib.metadata.distribution("diffusers")
+    direct_url = json.loads(metadata.read_text("direct_url.json") or "{}")
+    actual = direct_url.get("vcs_info", {}).get("commit_id")
+except (ImportError, ValueError, OSError):
+    actual = None
+print(f"[SD3 ENV] diffusers commit: {actual!r}; expected: {expected}", flush=True)
+sys.exit(0 if actual == expected else 1)
+PY
+}
+
+prepare_sd3_python() {
+  local candidate="$1" cache_root="$2" setup_log="$3"
+  local key isolated_python isolated_dir
+  mkdir -p -- "${setup_log%/*}"
+  printf '[SD3 ENV] Candidate Python: %s\n' "$candidate" >"$setup_log"
+  if sd3_diffusers_commit_ok "$candidate" >>"$setup_log" 2>&1; then
+    sd3_python_bin="$candidate"
+  else
+    key="$("$candidate" - 2>>"$setup_log" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+identity = f"{Path(sys.executable).resolve()}\n{Path(sys.prefix).resolve()}\n{sys.version}"
+print(hashlib.sha256(identity.encode()).hexdigest()[:16])
+PY
+)" || { echo "[SD3 ENV FAIL] Could not identify the selected Python; see $setup_log" >&2; return 1; }
+    isolated_dir="$cache_root/_sd3_python/$key"
+    isolated_python="$isolated_dir/bin/python"
+    if [[ ! -x "$isolated_python" ]] || ! "$isolated_python" -m pip --version >/dev/null 2>&1; then
+      echo "[SD3 ENV] Creating isolated Python: $isolated_dir" | tee -a "$setup_log"
+      if ! "$candidate" -m venv --system-site-packages "$isolated_dir" >>"$setup_log" 2>&1; then
+        echo "[SD3 ENV FAIL] Could not create the isolated Python; see $setup_log" >&2
+        return 1
+      fi
+    fi
+    if ! sd3_diffusers_commit_ok "$isolated_python" >>"$setup_log" 2>&1; then
+      echo "[SD3 ENV] Installing pinned diffusers in $isolated_dir" | tee -a "$setup_log"
+      if ! "$isolated_python" -m pip install --no-deps --force-reinstall \
+          'git+https://github.com/initml/diffusers.git@53dcfcf3f3009a79fd484eed9b09ea76189da434' \
+          >>"$setup_log" 2>&1; then
+        echo "[SD3 ENV FAIL] Pinned diffusers install failed; see $setup_log" >&2
+        return 1
+      fi
+    fi
+    if ! sd3_diffusers_commit_ok "$isolated_python" >>"$setup_log" 2>&1; then
+      echo "[SD3 ENV FAIL] Installed diffusers has no matching Git commit; see $setup_log" >&2
+      return 1
+    fi
+    if ! "$isolated_python" - <<'PY' >>"$setup_log" 2>&1
+import sys
+from pathlib import Path
+import diffusers
+
+source = Path(diffusers.__file__).resolve()
+prefix = Path(sys.prefix).resolve()
+if not source.is_relative_to(prefix):
+    raise RuntimeError(f"SD3 imported diffusers from {source}, outside the isolated Python {prefix}")
+print(f"[SD3 ENV] Imported diffusers from {source}", flush=True)
+PY
+    then
+      echo "[SD3 ENV FAIL] Python imports a different diffusers copy; see $setup_log" >&2
+      return 1
+    fi
+    sd3_python_bin="$isolated_python"
+  fi
+  if ! "$sd3_python_bin" -c \
+      'import torch; from diffusers import StableDiffusion3Pipeline, FlashFlowMatchEulerDiscreteScheduler' \
+      >>"$setup_log" 2>&1; then
+    echo "[SD3 ENV FAIL] SD3 imports failed in $sd3_python_bin; see $setup_log" >&2
+    return 1
+  fi
+  echo "[SD3 ENV] Using $sd3_python_bin | log=$setup_log"
+}
 
 check_sd3_hf_access() {
   local access_python="${2:-$python_bin}"
@@ -453,8 +540,12 @@ else:
     path.write_text(json.dumps(metadata, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 PY
   echo "[SUITE] output=$suite_root | COCO=$coco_root"
-  if ! check_sd3_hf_access "$SCRIPT_DIR/profiles/sem_sd3_ffm.py" "$sd3_python_bin"; then
-    echo "[SUITE WARN] SD3 access is unavailable now; non-SD3 profiles will still run" >&2
+  sd3_environment_ready=true
+  if ! prepare_sd3_python "$sd3_python_bin" "$output_root" "$suite_root/sd3_environment.log"; then
+    sd3_environment_ready=false
+    echo "[SUITE WARN] SD3 environment is unavailable; non-SD3 profiles will still run" >&2
+  elif ! check_sd3_hf_access "$SCRIPT_DIR/profiles/sem_sd3_ffm.py" "$sd3_python_bin"; then
+    echo "[SUITE WARN] SD3 model access is unavailable now; non-SD3 profiles will still run" >&2
   fi
   prepare_coco
   "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" context \
@@ -508,6 +599,12 @@ PY
     local -a command=(bash "$SCRIPT_DIR/run_experiment.sh" --experiment "$id" \
       --coco-root "$coco_root" --output-root "$output_root" \
       --tag "$run_tag" --python "$profile_python_bin" --gpu-mode "$gpu_mode" "${seed_args[@]}" "$@")
+    if [[ "$id" == *_sd3_ffm && "$sd3_environment_ready" != true ]]; then
+      echo "[SD3 ENV FAIL] Pinned diffusers is unavailable; see $suite_root/sd3_environment.log" >>"$log_file"
+      printf '%s\t%s\t%s\t%s\n' "$seed_label" "$id" 2 "$log_file" >> "$suite_root/suite_failures.tsv"
+      echo "[SKIP SD3 ENV] $seed_label/$id | log=$log_file" >&2
+      return 1
+    fi
     if [[ ( -f "$log_file.ok" || -s "$run_dir/verification.log" ) && "$force_profile" != true ]]; then
       if "$python_bin" "$SCRIPT_DIR/suite_checkpoint.py" check \
           "$id" "$profile_kind" "$run_dir" "$seed_label" "$suite_root/.checkpoint_context.json"; then
@@ -839,6 +936,15 @@ if [[ "$profile_kind" == "full1073" && "$resume_run" != true && -n "$run_tag" ]]
     "$python_bin" -u "$SCRIPT_DIR/measure_existing.py" "$experiment" "$existing_run_dir" "$existing_coco_root"
     exit 4
   fi
+fi
+
+if [[ "$profile_kind" == "full1073" && "$experiment" == *_sd3_ffm ]]; then
+  output_root="$("$python_bin" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$output_root")"
+  mkdir -p -- "$output_root"
+  if ! prepare_sd3_python "$python_bin" "$output_root" "$output_root/sd3_environment.log"; then
+    exit 2
+  fi
+  python_bin="$sd3_python_bin"
 fi
 
 for command_name in sha256sum find sort xargs cmp; do
