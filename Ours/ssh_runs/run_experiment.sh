@@ -18,7 +18,7 @@ usage() {
     '  bash Ours/ssh_runs/run_experiment.sh --experiment pytorch_fid --export-dir DIR [--coco-root DIR] [--output-root DIR] [--reference-dir DIR] [--tag NAME]' \
     '  bash Ours/ssh_runs/run_experiment.sh --experiment ttur_fid --export-dir DIR [--coco-root DIR] [--output-root DIR] [--reference-dir DIR] [--ttur-fid-file FILE] [--tag NAME]' \
     '' \
-    'No arguments: run 21 diagnostics once, then 17 benchmarks and 3 FID tools for each of 10 base seeds (2024 + 10000000*n, n=0..9).' \
+    'No arguments: run 21 diagnostics once, then 17 benchmarks and 3 FID tools for base seed 2024.' \
     'This is the only Bash entrypoint. Use --list for all experiment IDs.' \
     'Default GPU preset: a100_80gb (A100 80 GB).' \
     'SD3: missing pinned diffusers is installed automatically into OUTPUT_ROOT/_sd3_python before generation.' \
@@ -100,7 +100,7 @@ if [[ "$profile_kind" == "suite" && ( -n "$dataset_root" || -n "$export_dir" || 
   echo "Dataset/export/reference and run-profile options require --experiment" >&2; exit 2
 fi
 if [[ "$profile_kind" == "suite" && "$base_seed_explicit" == true ]]; then
-  echo "The complete suite uses its fixed ten base seeds; --base-seed is for one experiment" >&2; exit 2
+  echo "The complete suite uses its fixed base seed 2024; --base-seed is for one experiment" >&2; exit 2
 fi
 if [[ ( "$profile_kind" == "diagnostic" || "$profile_kind" == "prepare_coco" ) && "$base_seed_explicit" == true ]]; then
   echo "--base-seed applies only to benchmark and FID profiles" >&2; exit 2
@@ -474,7 +474,7 @@ if [[ "$profile_kind" == "suite" ]]; then
       echo "Missing metric profile: $id" >&2; exit 2
     fi
   done
-  suite_seeds=(2024 10002024 20002024 30002024 40002024 50002024 60002024 70002024 80002024 90002024)
+  suite_seeds=(2024)
   # A no-argument invocation picks up the latest compatible suite, including
   # suites made before checkpointing. A new --tag remains an explicit reset.
   output_root="$("$python_bin" -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$output_root")"
@@ -492,7 +492,11 @@ if [[ "$profile_kind" == "suite" ]]; then
         printf '[PLAN] seed_%s %s\n' "$planned_seed" "$planned_id"
       done
     done
-    printf '[PLAN] aggregate %s seed reports\n' "${#suite_seeds[@]}"
+    if (( ${#suite_seeds[@]} >= 2 )); then
+      printf '[PLAN] aggregate %s seed reports\n' "${#suite_seeds[@]}"
+    else
+      echo '[PLAN] across-seed mean/std unavailable with one seed'
+    fi
     exit 0
   fi
 
@@ -555,6 +559,17 @@ PY
     mkdir -p -- "$suite_root/_superseded/suite_markers"
     mv -- "$suite_root/suite_complete.txt" \
       "$suite_root/_superseded/suite_markers/suite_complete_$(date -u +%Y%m%dT%H%M%S)_$$.txt"
+  fi
+  if (( ${#suite_seeds[@]} == 1 )); then
+    previous_aggregate_dir="$suite_root/_superseded/suite_markers/previous_multiseed_$(date -u +%Y%m%dT%H%M%S)_$$"
+    for old_aggregate in ten_seed_metrics.json ten_seed_metrics.csv \
+        sd3_ten_seed_metrics.json sd3_ten_seed_metrics.csv \
+        aggregate_non_sd3.log aggregate_sd3.log; do
+      if [[ -f "$suite_root/$old_aggregate" ]]; then
+        mkdir -p -- "$previous_aggregate_dir"
+        mv -- "$suite_root/$old_aggregate" "$previous_aggregate_dir/$old_aggregate"
+      fi
+    done
   fi
 
   profile_ran=false
@@ -891,7 +906,9 @@ PY
       if [[ ! -f "$suite_root/runner_logs/$seed/$id.log.ok" ]]; then sd3_ready=false; fi
     done
   done
-  if [[ "$non_sd3_ready" == true ]]; then
+  if (( ${#suite_seeds[@]} < 2 )); then
+    echo '[SKIP] Across-seed aggregation requires at least two seeds; individual benchmark metrics remain available'
+  elif [[ "$non_sd3_ready" == true ]]; then
     if ! "$python_bin" -u "$SCRIPT_DIR/aggregate_seeds.py" "$suite_root" "${suite_seeds[@]}" >"$suite_root/aggregate_non_sd3.log" 2>&1; then
        echo "[FAIL] Non-SD3 ${#suite_seeds[@]}-seed aggregation; see aggregate_non_sd3.log" >&2
       suite_failed=true
@@ -900,7 +917,9 @@ PY
      echo "[SKIP] Non-SD3 ${#suite_seeds[@]}-seed aggregation: incomplete seed set" >&2
     suite_failed=true
   fi
-  if [[ "$sd3_ready" == true ]]; then
+  if (( ${#suite_seeds[@]} < 2 )); then
+    : # The single-seed suite already records each verified SD3 metric report.
+  elif [[ "$sd3_ready" == true ]]; then
     if ! "$python_bin" -u "$SCRIPT_DIR/aggregate_sd3_seeds.py" \
       --semanticdraw "$suite_root" --anchordraw "$suite_root" --multidiffusion "$suite_root" \
       --output "$suite_root" --seeds "${suite_seeds[@]}" >"$suite_root/aggregate_sd3.log" 2>&1; then
